@@ -524,16 +524,20 @@ def _seg_axis(ax, model, lot, col, segs, screen=False):
     N = len(samples)
     multi = len(segs) > 1 or segs[0][0] != NO_PHASE
     ticks, labels = [], []
+    minor_ticks = []
     for pi, (ph, start, end) in enumerate(segs):
         base = start - 1
         for si, s in enumerate(samples):
             if s % 2 == 0:
                 ticks.append(base + si + 1)
                 labels.append(str(s))
+            else:
+                minor_ticks.append(base + si + 1)  # 홀수 시료는 minor tick
         if pi > 0:
             ax.axvline(start - 0.5, color="gray", lw=0.9, ls="--", alpha=0.8)
     ax.set_xticks(ticks)
     ax.set_xticklabels(labels)
+    ax.set_xticks(minor_ticks, minor=True)
     ax.set_xlim(0, segs[-1][2] + 1)
     ax.tick_params(labelsize=8 if screen else 6)
     if multi:
