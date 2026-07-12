@@ -516,8 +516,10 @@ def delta_title(model, lot, col):
     return re.sub(r"\[[^\[\]]*\]", "[%]", t, count=1)
 
 
-def _seg_axis(ax, model, lot, col, segs):
-    """구간형 X축: 시료 라벨(짝수) 반복 + phase 경계 점선 + phase 이름 표기."""
+def _seg_axis(ax, model, lot, col, segs, screen=False):
+    """구간형 X축: 시료 라벨(짝수) 반복 + phase 경계 점선 + phase 이름 표기.
+    screen=True(프로그램 화면): tick 폰트 +2, phase 이름을 축에 근접 배치(고정 픽셀).
+    screen=False(PDF): 기존 배치 유지."""
     samples = model.samples(lot)
     N = len(samples)
     multi = len(segs) > 1 or segs[0][0] != NO_PHASE
@@ -533,19 +535,27 @@ def _seg_axis(ax, model, lot, col, segs):
     ax.set_xticks(ticks)
     ax.set_xticklabels(labels)
     ax.set_xlim(0, segs[-1][2] + 1)
-    ax.tick_params(labelsize=6)
+    ax.tick_params(labelsize=8 if screen else 6)
     if multi:
-        trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
         for ph, start, end in segs:
             name = "" if ph == NO_PHASE else ph
-            ax.text((start + end) / 2, -0.30, name, transform=trans,
-                    ha="center", va="top", fontsize=8, fontweight="bold")
+            if screen:
+                # 화면: tick 라벨 바로 아래 고정 픽셀 오프셋 (축 크기 무관하게 근접)
+                ax.annotate(name, xy=((start + end) / 2, 0),
+                            xycoords=("data", "axes fraction"),
+                            xytext=(0, -18), textcoords="offset points",
+                            ha="center", va="top", fontsize=9, fontweight="bold",
+                            annotation_clip=False)
+            else:
+                trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
+                ax.text((start + end) / 2, -0.30, name, transform=trans,
+                        ha="center", va="top", fontsize=8, fontweight="bold")
         # phase 이름이 축 설명을 겸하므로 Sample No. 라벨은 생략 (겹침 방지)
     else:
         ax.set_xlabel("Sample No.", fontsize=8)
 
 
-def draw_line(ax, model, lot, col, picker=False):
+def draw_line(ax, model, lot, col, picker=False, screen=False):
     artists = {}
     segs = None
     for r in model.readouts(lot):
@@ -566,7 +576,7 @@ def draw_line(ax, model, lot, col, picker=False):
     mu = re.search(r"\(([^()]*)\)\s*(?:#\d+)?$", col)
     unit = f" ({mu.group(1)})" if mu else ""
     ax.set_ylabel(col.split("@")[0] + unit, fontsize=8)
-    _seg_axis(ax, model, lot, col, segs)
+    _seg_axis(ax, model, lot, col, segs, screen=screen)
     if (lot, col) in model.ylim:
         ax.set_ylim(*model.ylim[(lot, col)])
     ax.legend(fontsize=6, ncol=2)
@@ -574,7 +584,7 @@ def draw_line(ax, model, lot, col, picker=False):
     return artists
 
 
-def draw_delta(ax, model, lot, col):
+def draw_delta(ax, model, lot, col, screen=False):
     segs = None
     for r in model.readouts(lot)[1:]:
         c = readout_color(model, lot, r)
@@ -584,7 +594,7 @@ def draw_delta(ax, model, lot, col):
         xs, ys, segs = model.seg_delta(lot, model.readouts(lot)[0], col)
     ax.set_title(delta_title(model, lot, col), fontsize=9)
     ax.set_ylabel("Delta (%)", fontsize=8)
-    _seg_axis(ax, model, lot, col, segs)
+    _seg_axis(ax, model, lot, col, segs, screen=screen)
     ax.axhline(0, color="gray", lw=0.8, ls="--", alpha=0.7)
     if len(model.readouts(lot)) > 1:
         ax.legend(fontsize=6, ncol=2)
@@ -1010,13 +1020,13 @@ class App(BaseTk):
 
         self.line_fig.clear()
         ax = self.line_fig.add_subplot(111)
-        self._line_artists = draw_line(ax, self.model, lot, col, picker=True)
+        self._line_artists = draw_line(ax, self.model, lot, col, picker=True, screen=True)
         self.line_fig.tight_layout()
         self.line_canvas.draw()
 
         self.delta_fig.clear()
         axd = self.delta_fig.add_subplot(111)
-        draw_delta(axd, self.model, lot, col)
+        draw_delta(axd, self.model, lot, col, screen=True)
         self.delta_fig.tight_layout()
         self.delta_canvas.draw()
 
