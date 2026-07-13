@@ -615,10 +615,12 @@ def draw_line(ax, model, lot, col, picker=False, screen=False):
     if (lot, col) in model.ylim:
         ax.set_ylim(*model.ylim[(lot, col)])
     else:
-        # 5) 단위가 nA인 item은 Read-out 그래프 기본 Y축 0~500nA
+        # 기본: 모든 Read-out 그래프는 Y축 0에서 시작 (사용자 지정 시 우선)
         mu2 = re.search(r"\(([^()]*)\)\s*(?:#\d+)?$", col)
         if mu2 and mu2.group(1).strip() == "nA":
-            ax.set_ylim(0, 500)
+            ax.set_ylim(0, 500)  # 단위 nA item은 0~500nA
+        else:
+            ax.set_ylim(bottom=0)
     draw_ref_lines(ax, model, lot, col, "line")
     ax.legend(fontsize=9 if screen else 6, ncol=2)
     ax.grid(True, alpha=0.3)
@@ -1035,7 +1037,13 @@ class App(BaseTk):
 
     def _goto(self, idx):
         self.cur_idx = idx
-        self.box_page = 0
+        # 현재 item이 포함된 Box 페이지로 자동 동기화
+        lot, col = self.selected[idx]
+        if self.box_mode.get() == "item":
+            same_lot = [p for p in self.selected if p[0] == lot]
+            self.box_page = same_lot.index((lot, col)) // 4
+        else:
+            self.box_page = 0
         self.param_var.set(self._labels[idx])
         self._redraw()
 
@@ -1060,12 +1068,10 @@ class App(BaseTk):
         lot, col = self.selected[self.cur_idx]
         if self.box_mode.get() == "phase":
             return [(lot, col, ph, False) for ph in self.model.col_phases(lot, col)]
-        # item 모드: 같은 lot의 선택 컬럼들 중 현재 위치 기준 블록
+        # item 모드: 같은 lot의 선택 컬럼 "전체"를 단위로 (◀▶로 4개씩 페이지 이동)
         same_lot = [p for p in self.selected if p[0] == lot]
-        pos = same_lot.index((lot, col))
-        block = (pos // 4) * 4
         units = []
-        for g2, c2 in same_lot[block:block + 4]:
+        for g2, c2 in same_lot:
             if c2 in self.model.np_cols(g2):
                 units.append((g2, c2, NO_PHASE, False))
             else:
