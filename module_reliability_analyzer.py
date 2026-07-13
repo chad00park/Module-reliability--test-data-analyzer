@@ -514,21 +514,67 @@ class DataModel:
 # ============================================================================
 # 4. 그래프 렌더링
 # ============================================================================
-def draw_ref_lines(ax, model, lot, col, kind):
-    """(점선) 임의 기준선 + 축 옆 이름 표시. kind: 'line'|'delta'|'box'"""
-    for rl in model.ref_lines.get((lot, col, kind), []):
+def draw_ref_lines(ax, model, group, col, kind):
+    """(점선) 임의 기준선 + 이름을 그래프 안쪽에 표시.
+    이름은 data line과 겹침이 적은 쪽(위/아래, 좌/우)에 배치하고
+    기준선과 가는 실선으로 연결한다."""
+    lines = model.ref_lines.get((group, col, kind), [])
+    if not lines:
+        return
+    # 현재 그려진 data line들의 점 수집 (겹침 회피 판단용)
+    pts_x, pts_y = [], []
+    for ln in ax.get_lines():
+        if ln.get_marker() == "o":
+            xd = ln.get_xdata()
+            yd = ln.get_ydata()
+            for x, y in zip(xd, yd):
+                try:
+                    if not (math.isnan(float(y))):
+                        pts_x.append(float(x))
+                        pts_y.append(float(y))
+                except (TypeError, ValueError):
+                    pass
+    y0, y1 = ax.get_ylim()
+    x0, x1 = ax.get_xlim()
+    yr = (y1 - y0) or 1.0
+    xr = (x1 - x0) or 1.0
+    for rl in lines:
         c = rl.get("color") or "red"
         name = rl.get("name", "")
+        v = rl["value"]
         if rl["axis"] == "y":
-            ax.axhline(rl["value"], color=c, ls=":", lw=1.2, zorder=4)
-            tr = mtransforms.blended_transform_factory(ax.transAxes, ax.transData)
-            ax.text(1.004, rl["value"], name, transform=tr, ha="left",
-                    va="center", fontsize=7, color=c, clip_on=False)
+            ax.axhline(v, color=c, ls=":", lw=1.2, zorder=4)
+            if not name:
+                continue
+            dy = 0.07 * yr
+            # 선 위/아래 근처의 data 점 수를 비교해 덜 붐비는 쪽 선택
+            above = sum(1 for y in pts_y if v < y <= v + 2 * dy)
+            below = sum(1 for y in pts_y if v - 2 * dy <= y < v)
+            ty = v + dy if above <= below else v - dy
+            ty = min(max(ty, y0 + 0.03 * yr), y1 - 0.03 * yr)
+            tx = x1 - 0.02 * xr          # 이름 위치 (그래프 안쪽 우측)
+            ax_anchor = x1 - 0.10 * xr   # 기준선 위 연결점
+            ax.annotate(name, xy=(ax_anchor, v), xytext=(tx, ty),
+                        ha="right", va="center", fontsize=7, color=c,
+                        zorder=6, arrowprops=dict(arrowstyle="-", color=c,
+                                                  lw=0.7, alpha=0.9))
         else:
-            ax.axvline(rl["value"], color=c, ls=":", lw=1.2, zorder=4)
-            tr = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
-            ax.text(rl["value"], 1.01, name, transform=tr, ha="center",
-                    va="bottom", fontsize=7, color=c, clip_on=False)
+            ax.axvline(v, color=c, ls=":", lw=1.2, zorder=4)
+            if not name:
+                continue
+            dx = 0.05 * xr
+            right = sum(1 for x, y in zip(pts_x, pts_y)
+                        if v < x <= v + 2 * dx and y > y1 - 0.25 * yr)
+            left = sum(1 for x, y in zip(pts_x, pts_y)
+                       if v - 2 * dx <= x < v and y > y1 - 0.25 * yr)
+            tx = v + dx if right <= left else v - dx
+            tx = min(max(tx, x0 + 0.03 * xr), x1 - 0.03 * xr)
+            ty = y1 - 0.08 * yr          # 이름 위치 (그래프 안쪽 상단)
+            ay_anchor = y1 - 0.16 * yr   # 기준선 위 연결점
+            ax.annotate(name, xy=(v, ay_anchor), xytext=(tx, ty),
+                        ha="center", va="bottom", fontsize=7, color=c,
+                        zorder=6, arrowprops=dict(arrowstyle="-", color=c,
+                                                  lw=0.7, alpha=0.9))
 
 
 def readout_color(model, lot, readout):
@@ -606,7 +652,7 @@ def draw_line(ax, model, lot, col, picker=False, screen=False):
             ph, s = model.pos_to_phase_sample(lot, col, idx)
             oc = model.color_over.get((lot, r, col, ph, s))
             if oc and not math.isnan(v):
-                ax.plot([x], [v], marker="^", ms=7, color=oc, ls="none", zorder=5)
+                ax.plot([x], [v], marker="^", ms=5, color=oc, ls="none", zorder=5)
     ax.set_title(graph_title(model, lot, col), fontsize=9)
     mu = re.search(r"\(([^()]*)\)\s*(?:#\d+)?$", col)
     unit = f" ({mu.group(1)})" if mu else ""
@@ -615,10 +661,18 @@ def draw_line(ax, model, lot, col, picker=False, screen=False):
     if (lot, col) in model.ylim:
         ax.set_ylim(*model.ylim[(lot, col)])
     else:
-        # 기본: 모든 Read-out 그래프는 Y축 0에서 시작 (사용자 지정 시 우선)
-        mu2 = re.search(r"\(([^()]*)\)\s*(?:#\d+)?$", col)
-        if mu2 and mu2.group(1).strip() == "nA":
-            ax.set_ylim(0, 500)  # 단위 nA item은 0~500nA
+        # 기본: 모든 Read-out 그래프는 Y축 0 ~ (데이터 max의 110%)
+        vmax = None
+        for _ln in ax.get_lines():
+            for _y in _ln.get_ydata():
+                try:
+                    fy = float(_y)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isnan(fy) and (vmax is None or fy > vmax):
+                    vmax = fy
+        if vmax is not None and vmax > 0:
+            ax.set_ylim(0, vmax * 1.10)
         else:
             ax.set_ylim(bottom=0)
     draw_ref_lines(ax, model, lot, col, "line")
@@ -638,7 +692,7 @@ def draw_delta(ax, model, lot, col, screen=False):
             ph, s = model.pos_to_phase_sample(lot, col, idx)
             oc = model.color_over.get((lot, r, col, ph, s))
             if oc and not math.isnan(v):
-                ax.plot([x], [v], marker="^", ms=7, color=oc, ls="none", zorder=5)
+                ax.plot([x], [v], marker="^", ms=5, color=oc, ls="none", zorder=5)
     if segs is None:
         xs, ys, segs = model.seg_delta(lot, model.readouts(lot)[0], col)
     ax.set_title(delta_title(model, lot, col), fontsize=9)
@@ -684,7 +738,7 @@ def draw_box(ax, model, lot, col, phase=None, stacked=False,
             continue
         v = model.value(lot, r, c, ph, s)
         if v is not None and r in readouts:
-            ax.plot([readouts.index(r) + 1], [v], marker="^", ms=7,
+            ax.plot([readouts.index(r) + 1], [v], marker="^", ms=5,
                     color=oc, ls="none", zorder=5)
     title_phase = None if stacked else phase
     ax.set_title(graph_title(model, lot, col, title_phase), fontsize=8)
