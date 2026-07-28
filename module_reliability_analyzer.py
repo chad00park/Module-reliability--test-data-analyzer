@@ -2039,6 +2039,9 @@ PPT_LANDSCAPE = (13.33, 7.5)
 
 
 MAX_BLOCKS_PER_BAND = 6      # 한 줄(밴드)에 넣을 최대 (Lot x Read-out) 블록 수
+SUMMARY_FS = 7.0             # 요약표 기본 글자 크기 (Phase 행이 많아 작게)
+SUMMARY_ROW_K = 1.7          # 행 높이 = 글자 크기 x 배수
+SUMMARY_HDR_K = 1.75         # 헤더 행 높이 배수
 
 
 def summary_blocks(model, groups):
@@ -2095,19 +2098,19 @@ def draw_summary_page(fig, model, rel, bands, rows, label_heads, label_ws,
     # ---- 글자 크기 자동 맞춤: 모든 밴드가 한 페이지에 들어가도록 ----
     top_y = 0.90 if screen else 0.875
     avail_in = fh * (top_y - 0.045)
-    FS = 8.0
+    FS = SUMMARY_FS
     while True:
-        row_in = FS / 72.0 * 2.0
-        hdr_in = FS / 72.0 * 1.9
+        row_in = FS / 72.0 * SUMMARY_ROW_K
+        hdr_in = FS / 72.0 * SUMMARY_HDR_K
         need = len(bands) * (hdr_in * 3 + band_gap_in) + row_in * len(rows) * 1.0
         need = sum(hdr_in * 3 for _ in bands) + row_in * len(rows) * len(bands) \
             + band_gap_in * (len(bands) - 1)
-        if need <= avail_in or FS <= 5.0:
+        if need <= avail_in or FS <= 4.5:
             break
         FS -= 0.25
-    FS = max(FS, 5.0)
-    row_in = FS / 72.0 * 2.0
-    hdr_in = FS / 72.0 * 1.9
+    FS = max(FS, 4.5)
+    row_in = FS / 72.0 * SUMMARY_ROW_K
+    hdr_in = FS / 72.0 * SUMMARY_HDR_K
 
     y_cursor = top_y
     for band in bands:
@@ -2230,12 +2233,12 @@ def summary_pages(model, groups, cols):
     pages, cur = [], []
     for grp in blocks:
         if cur and len(cur) + len(grp) > MAX_ROWS_PER_PAGE:
-            pages.append((cur, ["Parameter", "Phase"], [0.135, 0.075]))
+            pages.append((cur, ["Parameter", "Phase"], [0.125, 0.06]))
             cur = []
         cur.extend(grp)
     if cur:
-        pages.append((cur, ["Parameter", "Phase"], [0.135, 0.075]))
-    return pages or [([], ["Parameter", "Phase"], [0.135, 0.075])]
+        pages.append((cur, ["Parameter", "Phase"], [0.125, 0.06]))
+    return pages or [([], ["Parameter", "Phase"], [0.125, 0.06])]
 
 
 def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
@@ -3229,7 +3232,6 @@ class App(BaseTk):
             self._phase_mode_confirmed = True
         self.box_page = 0
         self._redraw_box()
-        self._redraw_summary()
 
     def _box_units(self):
         """현재 선택 item의 Box 그래프 단위 목록 반환.
@@ -3288,6 +3290,7 @@ class App(BaseTk):
         self.line_canvas.draw()
 
         self._redraw_box()
+        self._redraw_summary()
 
     def _sum_blocks_cols(self):
         """현재 보고 있는 Rel test 항목의 요약표 대상 (그룹, 블록, 파라미터)."""
