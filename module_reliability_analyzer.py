@@ -10,6 +10,7 @@ Discrete Reliability Data Analyzer 기반 + Phase 차원 확장
 - Box plot: 'Phase별 분석' / 'Test item별 분석' 두 모드 (PDF에는 둘 다 포함)
 """
 
+import colorsys
 import csv
 import io
 import math
@@ -44,6 +45,50 @@ C_TINT = "#E5F1FF"      # 옅은 파랑 (편집 도구 버튼)
 C_TINT_DK = "#D2E7FF"
 C_SEG = "#E9E9EE"       # segmented control 배경
 UI_FONT = "Segoe UI"
+
+# ============================================================================
+# 색상 규칙 (Layout Designer 방식)
+#   · 메인 툴바 : 로고 초록 계열, 왼쪽 → 오른쪽으로 점점 진해짐
+#   · 서브 메뉴 : 분홍/자주 계열, 위 → 아래로 점점 진해짐
+#   · 중간 버튼 : 살구 파스텔 계열
+#   · 팝업창    : 연보라 계열 (동일하게 농도 변화 적용)
+# ============================================================================
+H_MAIN = 0.412      # 로고 초록 (RGB 41,96,67 기준)
+H_SUB = 0.90        # 분홍/자주
+H_MID = 0.10        # 살구
+H_POP = 0.72        # 연보라
+
+
+def shade(hue, sat, light):
+    """HLS -> '#RRGGBB'"""
+    r, g, b = colorsys.hls_to_rgb(hue, light, sat)
+    return "#%02X%02X%02X" % (int(r * 255), int(g * 255), int(b * 255))
+
+
+def color_ramp(hue, sat, l_start, l_end, n):
+    """n단계 농도 그라데이션 (앞이 연하고 뒤가 진함)."""
+    if n <= 1:
+        return [shade(hue, sat, l_start)]
+    return [shade(hue, sat, l_start + (l_end - l_start) * i / (n - 1))
+            for i in range(n)]
+
+
+def fg_for(bg):
+    """배경 밝기에 따른 글자색 (진한 배경 -> 흰 글씨)."""
+    r, g, b = (int(bg[i:i + 2], 16) for i in (1, 3, 5))
+    return "#FFFFFF" if (0.299 * r + 0.587 * g + 0.114 * b) < 150 else "#12331F"
+
+
+def darker(color, amount=0.08):
+    r, g, b = (int(color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    return shade(h, s, max(0.06, l - amount))
+
+
+# 툴바 버튼 단계 수 (왼→오 농도)
+MAIN_STEPS = 12
+MAIN_RAMP = None    # setup_apple_style에서 생성
+SUB_STEPS = 6
 
 
 def resource_path(name):
@@ -789,10 +834,73 @@ def setup_apple_style(root):
     style.configure("Horizontal.TProgressbar", background=C_ACCENT,
                     troughcolor=C_SEG, bordercolor=C_SEG,
                     lightcolor=C_ACCENT, darkcolor=C_ACCENT)
+
+    # ---- 색상 규칙 스타일 등록 -------------------------------------------
+    global MAIN_RAMP
+    MAIN_RAMP = color_ramp(H_MAIN, 0.42, 0.90, 0.46, MAIN_STEPS)
+    for i, c in enumerate(MAIN_RAMP):
+        style.configure(f"Main{i}.TButton", background=c, foreground=fg_for(c),
+                        bordercolor=c, lightcolor=c, darkcolor=c,
+                        borderwidth=1, relief="solid", padding=(12, 6),
+                        font=(UI_FONT, 10))
+        style.map(f"Main{i}.TButton",
+                  background=[("active", darker(c)), ("pressed", darker(c, 0.14))],
+                  bordercolor=[("active", darker(c))])
+    # 탭: 메인과 같은 계열의 옅은 톤
+    tab_sel = shade(H_MAIN, 0.35, 0.88)
+    style.configure("TNotebook.Tab", background=C_SEG, foreground=C_SUBTXT,
+                    padding=(16, 7), font=(UI_FONT, 10), borderwidth=0)
+    style.map("TNotebook.Tab",
+              background=[("selected", tab_sel)],
+              foreground=[("selected", "#12331F")],
+              font=[("selected", (UI_FONT, 10, "bold"))],
+              expand=[("selected", (0, 0, 0, 2))])
+    # 중간 버튼: 살구 파스텔
+    for i, c in enumerate(color_ramp(H_MID, 0.55, 0.90, 0.70, 6)):
+        style.configure(f"Mid{i}.TButton", background=c, foreground="#4A2B08",
+                        bordercolor=c, lightcolor=c, darkcolor=c,
+                        borderwidth=1, relief="solid", padding=(11, 5),
+                        font=(UI_FONT, 10))
+        style.map(f"Mid{i}.TButton",
+                  background=[("active", darker(c)), ("pressed", darker(c, 0.14))])
+    style.configure("Mid.TRadiobutton", background=C_BG, font=(UI_FONT, 10))
+    # 팝업창 버튼: 연보라 계열
+    for i, c in enumerate(color_ramp(H_POP, 0.45, 0.86, 0.62, 6)):
+        style.configure(f"Pop{i}.TButton", background=c, foreground="#241640",
+                        bordercolor=c, lightcolor=c, darkcolor=c,
+                        borderwidth=1, relief="solid", padding=(12, 6),
+                        font=(UI_FONT, 10))
+        style.map(f"Pop{i}.TButton",
+                  background=[("active", darker(c)), ("pressed", darker(c, 0.14))])
+
     style.configure("TSeparator", background=C_BORDER)
     style.configure("TCheckbutton", background=C_BG)
     style.configure("TRadiobutton", background=C_BG)
 
+
+
+def main_style(idx, total=None):
+    """메인 툴바 버튼의 위치(왼→오)에 따른 스타일 이름."""
+    n = MAIN_STEPS
+    if total and total > 1:
+        i = int(round(idx * (n - 1) / (total - 1)))
+    else:
+        i = min(idx, n - 1)
+    return f"Main{max(0, min(n - 1, i))}.TButton"
+
+
+def pop_style(idx, total=2):
+    """팝업창 버튼의 순서에 따른 스타일 이름 (앞이 연함)."""
+    n = 6
+    i = int(round(idx * (n - 1) / max(total - 1, 1))) if total > 1 else 0
+    return f"Pop{max(0, min(n - 1, i))}.TButton"
+
+
+def mid_style(idx, total=3):
+    """프로그램 중간 버튼 스타일 이름."""
+    n = 6
+    i = int(round(idx * (n - 1) / max(total - 1, 1))) if total > 1 else 0
+    return f"Mid{max(0, min(n - 1, i))}.TButton"
 
 def style_listbox(lb):
     """tk.Listbox를 카드 스타일로."""
@@ -868,40 +976,45 @@ READOUT_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*(hr|hrs|h|hour|hours|cyc|cycle|cycl
 LOT_RE = re.compile(r"^lot\s*([A-Za-z0-9]+)$", re.I)
 
 
-def parse_filename(path):
-    base = os.path.splitext(os.path.basename(path))[0]
-    tokens = [t for t in re.split(r"[_\s]+", base) if t]
-    readout_label = None
-    readout_value = None
-    lot = None
-    rest = []
-    is_retest = False
-    for tok in tokens:
-        if tok.lower() == "retest":
-            is_retest = True
-            continue
-        m = READOUT_RE.match(tok)
-        if m and readout_label is None:
-            readout_value = float(m.group(1))
-            unit = m.group(2).lower()
-            unit = "hr" if unit.startswith("h") else "cyc"
-            readout_label = f"{m.group(1)}{unit}"
-            continue
-        m = LOT_RE.match(tok)
-        if m and lot is None:
-            lot = "LOT" + m.group(1).upper()
-            continue
-        rest.append(tok)
-    if readout_label is None or lot is None or not rest:
-        raise ValueError(
-            f"파일명 인식 실패: '{os.path.basename(path)}'\n"
-            "파일 이름은 신뢰성명 + Lot번호 + Read-out 형식이어야 합니다.\n"
-            "예: HTRB_Lot1_0hr, HTBG+_Lot2_500cyc (구분자는 _ 또는 공백)"
-        )
-    rel = "_".join(rest).upper()
-    if is_retest:
-        readout_label = f"retest_{readout_label}"
-    return rel, lot, readout_label, readout_value, is_retest
+# ============================================================================
+# 신뢰성 항목별 표준 Read-out 프리셋 (표 입력 시 자동 채움)
+# ============================================================================
+READOUT_PRESETS = [
+    (("HTRB", "HTGB", "HTGB+", "HTGB-", "H3TRB", "HTSL", "THU", "LTSL", "HTOL"),
+     ["0hr", "500hr", "1000hr"]),
+    (("TC", "TST"), ["0cyc", "500cyc", "1000cyc"]),
+    (("IOL",), ["0cyc", "7500cyc", "15000cyc"]),
+    (("HAST", "UHAST"), ["0hr", "96hr"]),
+    (("PRECON", "RSH", "SD"), ["before", "after"]),
+]
+
+
+def preset_readouts(rel):
+    """Rel test 이름에 해당하는 표준 Read-out 목록 (없으면 빈 리스트)."""
+    key = (rel or "").strip().upper()
+    if not key:
+        return []
+    for names, ros in READOUT_PRESETS:
+        if key in names:
+            return list(ros)
+    return []
+
+
+def readout_sort_value(label):
+    """Read-out 문자열에 포함된 숫자로 정렬값 산출.
+    숫자가 없으면 None (입력 순서 유지)."""
+    m = re.search(r"[-+]?\d+(?:\.\d+)?", str(label))
+    return float(m.group()) if m else None
+
+
+def lot_display(lot):
+    """Lot# 입력값을 그래프 표기용으로 (숫자 1 -> LOT1)."""
+    s = str(lot).strip()
+    if not s:
+        return "LOT"
+    if s.upper().startswith("LOT"):
+        return "LOT" + s[3:].strip().upper()
+    return "LOT" + s.upper()
 
 
 # ============================================================================
@@ -1049,58 +1162,79 @@ class DataModel:
         self._redo = []
 
     # ---- 로드 ------------------------------------------------------------
-    def load(self, files):
+    def load_rows(self, rows):
+        """표(rows) 정보로 파일을 읽어 그룹별 적재.
+        rows: [{'rel','lot','readout','retest'(bool),'files'[paths]}] 순서 유지."""
         errors = []
         raw = {}
-        rels = {}
-        for p in files:
-            fname = os.path.basename(p)
-            try:
-                rel, lot, rl, rv, is_rt = parse_filename(p)
-                phases, cols, d = parse_data_file(p)
-            except ValueError as e:
-                errors.append(str(e))
+        group_order = []
+        group_meta = {}
+
+        for ri, row in enumerate(rows):
+            rel = (row.get("rel") or "").strip()
+            lot = (row.get("lot") or "").strip()
+            ro = (row.get("readout") or "").strip()
+            files = row.get("files") or []
+            if not files:
                 continue
-            rels.setdefault(rel, []).append(fname)
-            raw.setdefault(lot, []).append((rl, rv, is_rt, phases, cols, d, fname))
+            if not rel or not ro:
+                errors.append(f"{ri + 1}번째 행: Rel test와 Read-out을 입력하세요.")
+                continue
+            key = (rel.upper(), lot_display(lot))
+            if key not in raw:
+                raw[key] = []
+                group_order.append(key)
+                group_meta[key] = (rel.upper(), lot_display(lot))
+            is_rt = bool(row.get("retest"))
+            for fi, p in enumerate(files):
+                fname = os.path.basename(p)
+                try:
+                    phases, cols, d = parse_data_file(p)
+                except ValueError as e:
+                    errors.append(str(e))
+                    continue
+                label = ro if not is_rt else f"retest{fi + 1}_{ro}"
+                raw[key].append((label, ri, is_rt, fi, phases, cols, d, fname, ro))
 
         if not raw:
             return errors
-        if len(rels) > 1:
-            detail = "\n".join(f"  {r}: {', '.join(fs)}" for r, fs in rels.items())
-            errors.append("한 번에 하나의 신뢰성만 분석할 수 있습니다.\n"
-                          f"여러 신뢰성이 섞여 있습니다:\n{detail}")
-            return errors
-        self.reliability = next(iter(rels))
 
+        self.reliability = group_meta[group_order[0]][0] if group_order else ""
         self.groups = []
         self.g = {}
-        for lot in sorted(raw):
-            gkey = lot
-            entries = raw[lot]
-            seen_ro = {}
-            dup = []
-            for rl, rv, is_rt, phases, cols, d, fname in entries:
-                if rl in seen_ro:
-                    dup.append(f"{gkey}의 {rl}: '{seen_ro[rl]}' 와 '{fname}'")
+        for key in group_order:
+            rel, lotd = group_meta[key]
+            gkey = f"{rel} {lotd}"
+            entries = raw[key]
+            seen_ro, dup = {}, []
+            for lb, ri, is_rt, fi, phases, cols, d, fname, ro_raw in entries:
+                if lb in seen_ro:
+                    dup.append(f"{gkey}의 {lb}: '{seen_ro[lb]}' 와 '{fname}'")
                 else:
-                    seen_ro[rl] = fname
+                    seen_ro[lb] = fname
             if dup:
-                errors.append("동일 Lot에 같은 Read-out 파일이 중복되었습니다:\n"
+                errors.append("같은 그룹에 동일한 Read-out이 중복되었습니다:\n"
                               + "\n".join(dup))
                 continue
             if len(entries) > MAX_READOUTS:
-                errors.append(f"{gkey}: Read-out 파일이 {MAX_READOUTS}개를 "
+                errors.append(f"{gkey}: Read-out이 {MAX_READOUTS}개를 "
                               f"초과합니다 ({len(entries)}개).")
                 continue
 
-            # 정렬: read-out 시간 → retest는 동일 시간 바로 다음
-            entries.sort(key=lambda x: (x[1], x[2]))
+            # 정렬: Read-out 숫자 우선, 없으면 표 순서 / retest는 원본 바로 뒤
+            def _key(e):
+                # 정렬은 표에 입력한 Read-out 값 기준 (retest 접두어 숫자 무시)
+                ri, is_rt, fi, ro_raw = e[1], e[2], e[3], e[-1]
+                v = readout_sort_value(ro_raw)
+                return (0 if v is not None else 1,
+                        v if v is not None else 0, ri, 1 if is_rt else 0, fi)
+            entries.sort(key=_key)
+
             readouts = [e[0] for e in entries]
             phase_order, rep_cols, np_cols = [], [], []
             samp_union = set()
             data = {}
-            for rl, rv, is_rt, phases, cols, d, fname in entries:
+            for lb, ri, is_rt, fi, phases, cols, d, fname, ro_raw in entries:
                 for ph in phases:
                     if ph not in phase_order:
                         phase_order.append(ph)
@@ -1112,7 +1246,7 @@ class DataModel:
                         if c not in rep_cols:
                             rep_cols.append(c)
                 samp_union.update(d.keys())
-                data[rl] = d
+                data[lb] = d
 
             n_params = len(rep_cols) + len(np_cols)
             if n_params > MAX_PARAMS:
@@ -1127,7 +1261,8 @@ class DataModel:
             self.groups.append(gkey)
             self.g[gkey] = dict(readouts=readouts, phases=phase_order,
                                 rep_cols=rep_cols, np_cols=np_cols,
-                                samples=sorted(samp_union), data=data)
+                                samples=sorted(samp_union), data=data,
+                                rel=rel, lot=lotd)
 
         self.deleted.clear()
         self.color_over.clear()
@@ -1141,10 +1276,10 @@ class DataModel:
 
     # ---- 접근자 ----------------------------------------------------------
     def group_rel(self, lot):
-        return self.reliability
+        return self.g[lot].get("rel", self.reliability)
 
     def group_lot(self, lot):
-        return lot
+        return self.g[lot].get("lot", lot)
 
     def readouts(self, lot):
         return self.g[lot]["readouts"]
@@ -1978,7 +2113,7 @@ class App(BaseTk):
         self._fs_warned = False
         self.after(1500, self._watch_fullscreen)
         self.model = DataModel()
-        self.files = []
+        self.rows = []
         self.selected = []   # [(lot, col)]
         self.cur_idx = 0
         self.box_mode = tk.StringVar(value="item")    # 'item'(기본) | 'phase'
@@ -2006,7 +2141,7 @@ class App(BaseTk):
                                    parent=self):
             return
         self.model = DataModel()
-        self.files = []
+        self.rows = []
         self.selected = []
         self.cur_idx = 0
         self.box_page = 0
@@ -2014,62 +2149,407 @@ class App(BaseTk):
         self._phase_mode_confirmed = False
         self._build_start()
 
-    # ---- 화면 1: 파일 선택 -------------------------------------------------
+    # ---- 화면 1: 데이터 입력 표 --------------------------------------------
     def _build_start(self):
         for w in self.winfo_children():
             w.destroy()
-        frm = ttk.Frame(self, padding=(24, 16, 24, 20))
+        if not getattr(self, "rows", None):
+            self.rows = [self._new_row()]
+        self._sel_row = 0
+        self._pending_file = None      # 클릭 이동 중인 파일 (row_idx, file_idx)
+
+        frm = ttk.Frame(self, padding=(20, 12, 20, 14))
         frm.pack(fill="both", expand=True)
         logo_header(frm)
-        ttk.Label(frm, text="Module Reliability Data Analyzer",
-                  style="Title.TLabel").pack(pady=(14, 4))
-        ttk.Label(frm, text="파일 이름은 신뢰성명 + Lot번호 + Read-out 형식이어야 합니다.\n"
-                            "예: HTRB_Lot1_0hr.csv, HTBG+_Lot2_500cyc.xlsx (구분자: _ 또는 공백)\n"
-                            "서로 다른 Lot은 자동 구분되며, 다른 신뢰성이 섞이면 경고가 표시됩니다.",
-                  style="Sub.TLabel", justify="center").pack(pady=(0, 10))
+        ttk.Label(frm, text="분석할 신뢰성 항목과 데이터 파일을 표에 입력하세요",
+                  style="Title.TLabel").pack(pady=(10, 2))
+        ttk.Label(frm, text="Rel test를 입력하면 표준 Read-out이 자동으로 채워집니다. "
+                            "모든 칸은 자유롭게 수정할 수 있습니다.",
+                  style="Sub.TLabel").pack(pady=(0, 8))
 
-        drop = tk.Label(frm, text="⬇\n여기에 파일을 Drag && Drop 하세요"
-                        if HAS_DND else "Browse 버튼으로 파일을 선택하세요",
-                        height=6, bg=C_CARD, fg=C_SUBTXT,
-                        font=(UI_FONT, 11), relief="solid", bd=1,
-                        highlightthickness=0)
-        drop.pack(fill="x", pady=8)
+        tb = ttk.Frame(frm)
+        tb.pack(fill="x", pady=(0, 8))
+        # 메인 툴바: 왼쪽 → 오른쪽으로 농도가 진해짐
+        TB = [
+            ("+ 행 추가", self._row_add),
+            ("선택 위에 삽입", self._row_insert),
+            ("선택 행 삭제", self._row_delete),
+            ("↑", lambda: self._row_move(-1)),
+            ("↓", lambda: self._row_move(1)),
+            ("파일 넣기…", self._browse),
+            ("파일 비우기", self._row_clear_files),
+            ("⟲ 처음으로", self._reset_all),
+            ("다음 (파일 읽기)", self._load_files),
+        ]
+        n_tb = len(TB)
+        for i, (label, cmd) in enumerate(TB):
+            w = 3 if label in ("↑", "↓") else None
+            kw = {"width": w} if w else {}
+            ttk.Button(tb, text=label, style=main_style(i, n_tb),
+                       command=cmd, **kw).pack(side="left", padx=3)
+
+        # 표 영역 (Canvas + 스크롤)
+        wrap = tk.Frame(frm, bg=C_CARD, highlightthickness=1,
+                        highlightbackground=C_BORDER)
+        wrap.pack(fill="both", expand=True)
+        self.tbl_canvas = tk.Canvas(wrap, bg=C_CARD, highlightthickness=0)
+        vs = ttk.Scrollbar(wrap, orient="vertical", command=self.tbl_canvas.yview)
+        self.tbl_canvas.configure(yscrollcommand=vs.set)
+        vs.pack(side="right", fill="y")
+        self.tbl_canvas.pack(side="left", fill="both", expand=True)
+        self.tbl_body = tk.Frame(self.tbl_canvas, bg=C_CARD)
+        self._tbl_win = self.tbl_canvas.create_window((0, 0), window=self.tbl_body,
+                                                      anchor="nw")
+        self.tbl_body.bind("<Configure>", lambda e: self.tbl_canvas.configure(
+            scrollregion=self.tbl_canvas.bbox("all")))
+        self.tbl_canvas.bind("<Configure>", lambda e: self.tbl_canvas.itemconfigure(
+            self._tbl_win, width=e.width))
+        self.tbl_canvas.bind_all("<MouseWheel>", self._on_wheel)
+
         if HAS_DND:
-            drop.drop_target_register(DND_FILES)
-            drop.dnd_bind("<<Drop>>", lambda e: self._add_files(self.tk.splitlist(e.data)))
+            for w in (self.tbl_canvas, self.tbl_body):
+                w.drop_target_register(DND_FILES)
+                w.dnd_bind("<<Drop>>", self._on_drop_files)
 
-        ttk.Button(frm, text="Browse…", command=self._browse).pack(pady=(2, 0))
-        self.file_list = tk.Listbox(frm, height=8)
-        style_listbox(self.file_list)
-        self.file_list.pack(fill="both", expand=True, pady=12)
-        btns = ttk.Frame(frm)
-        btns.pack()
-        ttk.Button(btns, text="선택 제거", command=self._remove_file).pack(side="left", padx=5)
-        ttk.Button(btns, text="다음 (파일 읽기)", style="Accent.TButton",
-                   command=self._load_files).pack(side="left", padx=5)
+        tip = tk.Label(frm, bg=C_TINT, fg="#0A5BC4", justify="left",
+                       font=(UI_FONT, 9), padx=12, pady=8,
+                       text="· 파일을 표 위로 끌어다 놓으면 빈 칸부터 순서대로 채워집니다.    "
+                            "· 파일을 드래그하거나, 파일 클릭 후 옮길 행을 클릭하면 위치를 바꿀 수 있습니다.\n"
+                            "· Retest 행에는 파일을 여러 개 넣을 수 있고, 넣은 순서대로 retest1, retest2 … 로 표시됩니다.    "
+                            "· 파일을 더블클릭하면 삭제됩니다.    · CSV / Excel(xlsx, xls) 파일을 사용합니다.")
+        tip.pack(fill="x", pady=(8, 0))
 
+        self._render_table()
+
+    def _new_row(self, rel="", lot="", ro="", retest=False):
+        return {"rel": rel, "lot": lot, "readout": ro,
+                "retest": retest, "files": []}
+
+    def _on_wheel(self, event):
+        try:
+            self.tbl_canvas.yview_scroll(int(-event.delta / 120), "units")
+        except Exception:
+            pass
+
+    COL_W = [170, 90, 160, 80]   # Rel test / Lot# / Read-out / Retest
+
+    def _render_table(self):
+        for w in self.tbl_body.winfo_children():
+            w.destroy()
+        hdr = tk.Frame(self.tbl_body, bg="#F7F7FA")
+        hdr.pack(fill="x")
+        for i, (name, w_) in enumerate(zip(
+                ["Rel test", "Lot#", "Read-out", "Retest"], self.COL_W)):
+            tk.Label(hdr, text=name, bg="#F7F7FA", fg=C_TEXT, anchor="w",
+                     font=(UI_FONT, 10, "bold"), width=0).place(
+                x=sum(self.COL_W[:i]) + 10, y=8)
+        tk.Label(hdr, text="Data upload", bg="#F7F7FA", fg=C_TEXT, anchor="w",
+                 font=(UI_FONT, 10, "bold")).place(x=sum(self.COL_W) + 10, y=8)
+        hdr.configure(height=32)
+        hdr.pack_propagate(False)
+
+        self._row_frames = []
+        for i, row in enumerate(self.rows):
+            self._render_row(i, row)
+
+    def _group_start(self, i):
+        """이 행이 새 그룹(Rel test/Lot# 조합 변경)의 시작인지."""
+        row = self.rows[i]
+        if i == 0:
+            return True
+        prev = self.rows[i - 1]
+        return (row["rel"].strip().upper(), row["lot"].strip()) != \
+               (prev["rel"].strip().upper(), prev["lot"].strip())
+
+    def _effective(self, i, key):
+        """비워둔 칸은 위 행의 값을 물려받음 (표시는 비어 있어도 분석에 사용)."""
+        for j in range(i, -1, -1):
+            v = self.rows[j].get(key, "").strip()
+            if v:
+                return v
+        return ""
+
+    def _render_row(self, i, row):
+        bg = C_TINT if i == self._sel_row else C_CARD
+        fr = tk.Frame(self.tbl_body, bg=bg, height=34)
+        fr.pack(fill="x")
+        fr.pack_propagate(False)
+        self._row_frames.append(fr)
+        # 그룹 구분선
+        sep = tk.Frame(self.tbl_body, bg="#B9B9C0" if self._group_start(i) and i > 0
+                       else "#EDEDF1", height=2 if self._group_start(i) and i > 0 else 1)
+        sep.pack(fill="x", before=fr)
+
+        fr.bind("<Button-1>", lambda e, idx=i: self._select_row(idx))
+
+        def entry(col, x, w, var_key, bold=False):
+            var = tk.StringVar(value=row[var_key])
+            e = tk.Entry(fr, textvariable=var, relief="flat", bg=bg, fg=C_TEXT,
+                         font=(UI_FONT, 10, "bold" if bold else "normal"),
+                         highlightthickness=1, highlightbackground=bg,
+                         highlightcolor=C_ACCENT, bd=0)
+            e.place(x=x + 8, y=6, width=w - 16, height=22)
+            e.bind("<FocusIn>", lambda ev, idx=i: self._select_row(idx, keep=True))
+            var.trace_add("write",
+                          lambda *a, idx=i, k=var_key, v=var: self._cell_edit(idx, k, v))
+            return e
+
+        x = 0
+        entry(0, x, self.COL_W[0], "rel", bold=True); x += self.COL_W[0]
+        entry(1, x, self.COL_W[1], "lot"); x += self.COL_W[1]
+        entry(2, x, self.COL_W[2], "readout"); x += self.COL_W[2]
+
+        # Retest 체크박스
+        rv = tk.BooleanVar(value=row["retest"])
+        cb = tk.Checkbutton(fr, variable=rv, bg=bg, activebackground=bg,
+                            highlightthickness=0, bd=0,
+                            command=lambda idx=i, v=rv: self._toggle_retest(idx, v))
+        cb.place(x=x + self.COL_W[3] // 2 - 10, y=7)
+        x += self.COL_W[3]
+
+        # 파일 태그
+        fx = x + 8
+        if row["files"]:
+            for k, p in enumerate(row["files"]):
+                name = os.path.basename(p)
+                sel = (self._pending_file == (i, k))
+                tag = tk.Label(fr, text=name, bg="#CDE3FF" if sel else "#EEF6FF",
+                               fg="#0A5BC4", font=(UI_FONT, 9), padx=8, pady=2,
+                               cursor="hand2")
+                tag.place(x=fx, y=6)
+                tag.update_idletasks()
+                tag.bind("<Button-1>",
+                         lambda e, idx=i, fi=k: self._file_click(idx, fi))
+                tag.bind("<B1-Motion>",
+                         lambda e, idx=i, fi=k: self._file_drag(e, idx, fi))
+                tag.bind("<ButtonRelease-1>",
+                         lambda e, idx=i, fi=k: self._file_drop(e, idx, fi))
+                tag.bind("<Double-Button-1>",
+                         lambda e, idx=i, fi=k: self._file_remove(idx, fi))
+                fx += tag.winfo_reqwidth() + 6
+            if row["retest"]:
+                tags = ", ".join(f"retest{k + 1}" for k in range(len(row["files"])))
+                tk.Label(fr, text=f"→ {tags}", bg=bg, fg=C_SUBTXT,
+                         font=(UI_FONT, 8)).place(x=fx + 2, y=9)
+        else:
+            lb = tk.Label(fr, text="파일을 여기로 끌어다 놓거나 [파일 넣기…] 클릭",
+                          bg=bg, fg="#B4B4BA", font=(UI_FONT, 9))
+            lb.place(x=fx, y=8)
+            lb.bind("<Button-1>", lambda e, idx=i: self._select_row(idx))
+
+    # ---- 표 편집 -----------------------------------------------------------
+    def _select_row(self, idx, keep=False):
+        # 클릭 이동 대기 중인 파일이 있으면 이 행으로 옮김
+        if self._pending_file is not None and not keep:
+            src_i, src_k = self._pending_file
+            if src_i != idx:
+                p = self.rows[src_i]["files"].pop(src_k)
+                self.rows[idx]["files"].append(p)
+            self._pending_file = None
+            self._sel_row = idx
+            self._render_table()
+            return
+        self._sel_row = idx
+        for j, fr in enumerate(getattr(self, "_row_frames", [])):
+            try:
+                bg = C_TINT if j == idx else C_CARD
+                fr.configure(bg=bg)
+                for ch in fr.winfo_children():
+                    if isinstance(ch, (tk.Entry, tk.Checkbutton)):
+                        ch.configure(bg=bg)
+                    elif isinstance(ch, tk.Label) and ch.cget("fg") in (C_SUBTXT, "#B4B4BA"):
+                        ch.configure(bg=bg)
+            except tk.TclError:
+                pass
+
+    def _cell_edit(self, idx, key, var):
+        val = var.get()
+        old = self.rows[idx][key]
+        self.rows[idx][key] = val
+        # Rel test 입력 시 표준 Read-out 자동 채움 (아래가 비어 있을 때만)
+        if key == "rel" and val.strip() and val.strip().upper() != old.strip().upper():
+            ros = preset_readouts(val)
+            if ros:
+                self.after(400, lambda idx=idx, ros=ros, v=val: self._apply_preset(idx, ros, v))
+
+    def _apply_preset(self, idx, ros, val):
+        if idx >= len(self.rows) or self.rows[idx]["rel"].strip() != val.strip():
+            return
+        row = self.rows[idx]
+        if row["readout"].strip() or row["files"]:
+            return   # 이미 채워진 행은 건드리지 않음
+        if not row["lot"].strip():
+            row["lot"] = "1"
+        row["readout"] = ros[0]
+        for k, ro in enumerate(ros[1:], start=1):
+            self.rows.insert(idx + k, self._new_row(ro=ro))
+        self._render_table()
+
+    def _toggle_retest(self, idx, var):
+        self.rows[idx]["retest"] = bool(var.get())
+        self._render_table()
+
+    def _row_add(self):
+        self.rows.append(self._new_row())
+        self._sel_row = len(self.rows) - 1
+        self._render_table()
+
+    def _row_insert(self):
+        self.rows.insert(self._sel_row, self._new_row())
+        self._render_table()
+
+    def _row_delete(self):
+        if len(self.rows) <= 1:
+            self.rows = [self._new_row()]
+        else:
+            del self.rows[self._sel_row]
+            self._sel_row = min(self._sel_row, len(self.rows) - 1)
+        self._render_table()
+
+    def _row_move(self, d):
+        i = self._sel_row
+        j = i + d
+        if 0 <= j < len(self.rows):
+            self.rows[i], self.rows[j] = self.rows[j], self.rows[i]
+            self._sel_row = j
+            self._render_table()
+
+    def _row_clear_files(self):
+        self.rows[self._sel_row]["files"] = []
+        self._render_table()
+
+    # ---- 파일 넣기 / 이동 --------------------------------------------------
     def _browse(self):
         paths = filedialog.askopenfilenames(
-            filetypes=[("Data files", "*.csv *.xlsx *.xlsm"), ("All", "*.*")])
-        self._add_files(paths)
+            filetypes=[("Data files", "*.csv *.xlsx *.xlsm *.xls"), ("All", "*.*")])
+        if paths:
+            self._assign_files(list(paths), start=self._sel_row)
 
-    def _add_files(self, paths):
+    def _on_drop_files(self, event):
+        paths = [p.strip("{}") for p in self.tk.splitlist(event.data)]
+        paths = [p for p in paths if p]
+        if not paths:
+            return
+        # 드롭 지점의 행부터 채움
+        start = self._row_at_y(event.y_root)
+        if start is not None and self.rows[start]["retest"]:
+            self._drop_on_row(start, paths)      # Retest 행: 여러 파일 모두 추가
+        else:
+            self._assign_files(paths, start=start if start is not None
+                               else self._sel_row)
+
+    def _row_at_y(self, y_root):
+        for i, fr in enumerate(getattr(self, "_row_frames", [])):
+            try:
+                top = fr.winfo_rooty()
+                if top <= y_root <= top + fr.winfo_height():
+                    return i
+            except tk.TclError:
+                pass
+        return None
+
+    def _assign_files(self, paths, start=0):
+        """빈 칸부터 순서대로 한 행에 하나씩 채움.
+        (Retest 행에 여러 파일을 넣으려면 그 행에 직접 드롭하거나 드래그해 옮깁니다.)"""
+        i = start
         for p in paths:
-            p = p.strip("{}")
-            if p and p not in self.files:
-                self.files.append(p)
-                self.file_list.insert("end", os.path.basename(p))
+            while i < len(self.rows) and self.rows[i]["files"]:
+                i += 1
+            if i >= len(self.rows):
+                self.rows.append(self._new_row())
+            self.rows[i]["files"].append(p)
+            i += 1
+        self._render_table()
 
-    def _remove_file(self):
-        for i in reversed(self.file_list.curselection()):
-            self.file_list.delete(i)
-            del self.files[i]
+    def _drop_on_row(self, idx, paths):
+        """특정 행에 직접 드롭: 그 행에 모두 추가 (Retest 다중 파일용)."""
+        for p in paths:
+            self.rows[idx]["files"].append(p)
+        self._render_table()
+
+    def _file_click(self, idx, fi):
+        self._pending_file = (idx, fi)
+        self._drag_start = True
+        self._render_table()
+
+    def _file_drag(self, event, idx, fi):
+        self._dragging = True
+
+    def _file_drop(self, event, idx, fi):
+        if not getattr(self, "_dragging", False):
+            return      # 단순 클릭 → 클릭-이동 대기 상태 유지
+        self._dragging = False
+        target = self._row_at_y(event.y_root)
+        if target is not None and target != idx:
+            p = self.rows[idx]["files"].pop(fi)
+            self.rows[target]["files"].append(p)   # 기존 파일과 함께 유지
+            self._pending_file = None
+            self._sel_row = target
+        self._render_table()
+
+    def _file_remove(self, idx, fi):
+        if 0 <= fi < len(self.rows[idx]["files"]):
+            del self.rows[idx]["files"][fi]
+        self._pending_file = None
+        self._render_table()
+
+    # ---- 다음 단계 ---------------------------------------------------------
+    def _collect_rows(self):
+        """빈 칸을 위 행에서 물려받아 완전한 행 목록 생성 (파일 있는 행만)."""
+        out = []
+        for i, row in enumerate(self.rows):
+            if not row["files"]:
+                continue
+            out.append({
+                "rel": self._effective(i, "rel"),
+                "lot": self._effective(i, "lot") or "1",
+                "readout": row["readout"].strip(),
+                "retest": row["retest"],
+                "files": list(row["files"]),
+            })
+        return out
+
+    def _check_names(self, rows):
+        """파일 이름이 표의 Rel test / Read-out과 안 맞아 보이는 경우 한 번에 확인."""
+        odd = []
+        for r in rows:
+            rel = r["rel"].strip().lower()
+            ro = r["readout"].strip().lower()
+            ro_num = readout_sort_value(ro)
+            for p in r["files"]:
+                base = os.path.splitext(os.path.basename(p))[0].lower()
+                ok_rel = bool(rel) and rel.replace("+", "").replace("-", "") in \
+                    base.replace("+", "").replace("-", "")
+                ok_ro = bool(ro) and (ro in base or
+                                      (ro_num is not None and
+                                       str(int(ro_num)) in base))
+                if not (ok_rel or ok_ro):
+                    odd.append(f"  {os.path.basename(p)}"
+                               f"   →  {r['rel']} / {lot_display(r['lot'])} / {r['readout']}")
+        if not odd:
+            return True
+        return messagebox.askyesno(
+            "파일 확인",
+            "아래 파일은 이름이 표의 내용과 달라 보입니다.\n"
+            "표에 입력한 정보대로 분석합니다. 이대로 진행할까요?\n\n"
+            + "\n".join(odd[:15])
+            + ("\n  …" if len(odd) > 15 else ""), parent=self)
 
     def _load_files(self):
-        if not self.files:
-            messagebox.showwarning("알림", "파일을 먼저 선택하세요.", parent=self)
+        rows = self._collect_rows()
+        if not rows:
+            messagebox.showwarning("알림", "데이터 파일을 먼저 넣어주세요.", parent=self)
             return
-        errors = self.model.load(self.files)
+        missing = [f"{i + 1}행" for i, r in enumerate(rows)
+                   if not r["rel"].strip() or not r["readout"].strip()]
+        if missing:
+            messagebox.showwarning(
+                "알림", "Rel test와 Read-out을 모두 입력하세요.\n"
+                        f"확인 필요: {', '.join(missing)}", parent=self)
+            return
+        if not self._check_names(rows):
+            return
+        errors = self.model.load_rows(rows)
         if errors:
             messagebox.showerror("파일 오류", "\n\n".join(errors), parent=self)
         if not self.model.groups:
@@ -2109,12 +2589,15 @@ class App(BaseTk):
         self.param_lb.pack(fill="both", expand=True, pady=10)
         btns = ttk.Frame(frm)
         btns.pack()
-        ttk.Button(btns, text="전체 선택",
-                   command=lambda: self.param_lb.select_set(0, "end")).pack(side="left", padx=5)
-        ttk.Button(btns, text="분석 시작", style="Accent.TButton",
-                   command=self._analyze).pack(side="left", padx=5)
-        ttk.Button(btns, text="← 파일 다시 선택", command=self._build_start).pack(side="left", padx=5)
-        ttk.Button(btns, text="⟲ 처음으로 (Reset)", command=self._reset_all).pack(side="left", padx=5)
+        _pbtns = [("전체 선택", lambda: self.param_lb.select_set(0, "end")),
+                  ("분석 시작", self._analyze)]
+        for _i, (_t, _c) in enumerate(_pbtns):
+            ttk.Button(btns, text=_t, style=main_style(_i, 4),
+                       command=_c).pack(side="left", padx=5)
+        ttk.Button(btns, text="← 파일 다시 선택", style=main_style(2, 4),
+                   command=self._build_start).pack(side="left", padx=5)
+        ttk.Button(btns, text="⟲ 처음으로 (Reset)", style=main_style(3, 4),
+                   command=self._reset_all).pack(side="left", padx=5)
         self.pbar = ttk.Progressbar(frm, mode="determinate")
         self.pbar.pack(fill="x", pady=5)
 
@@ -2148,31 +2631,34 @@ class App(BaseTk):
             _l = tk.Label(top, image=img, bg=C_BG, bd=0)
             _l._logo_ref = img
             _l.pack(side="left", padx=(0, 12))
-        ttk.Button(top, text="←  Parameter",
-                   command=self._back_to_params).pack(side="left")
-        ttk.Button(top, text="◀ 이전", command=lambda: self._nav(-1)).pack(side="left", padx=3)
-        self.param_var = tk.StringVar()
-        self._labels = [self._label(p) for p in self.selected]
-        cb = ttk.Combobox(top, textvariable=self.param_var,
-                          values=self._labels, width=55, state="readonly")
-        cb.pack(side="left", padx=3)
-        cb.bind("<<ComboboxSelected>>",
-                lambda e: self._goto(self._labels.index(self.param_var.get())))
-        ttk.Button(top, text="다음 ▶", command=lambda: self._nav(1)).pack(side="left", padx=3)
-        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=8)
-        ttk.Button(top, text="Y축 Min/Max", style="Tint.TButton",
-                   command=self._set_ylim).pack(side="left", padx=3)
-        ttk.Button(top, text="Limit", style="Tint.TButton",
-                   command=self._limit_dialog).pack(side="left", padx=3)
-        ttk.Button(top, text="임의선", style="Tint.TButton",
-                   command=self._custom_line_dialog).pack(side="left", padx=3)
-        ttk.Button(top, text="텍스트", style="Tint.TButton",
-                   command=self._text_dialog).pack(side="left", padx=3)
-        ttk.Button(top, text="Undo", command=self._undo).pack(side="left", padx=3)
-        ttk.Button(top, text="Redo", command=self._redo).pack(side="left", padx=3)
-        ttk.Button(top, text="Export PDF", style="Accent.TButton",
-                   command=self._export_pdf).pack(side="right", padx=3)
-        ttk.Button(top, text="⟲ 처음으로", command=self._reset_all).pack(side="right", padx=3)
+        # 메인 툴바: 로고 초록 계열, 왼쪽 → 오른쪽으로 농도가 진해짐
+        TOOLBAR = [
+            ("←  Parameter", self._back_to_params),
+            ("◀ 이전", lambda: self._nav(-1)),
+            (None, None),                       # Parameter 선택 콤보 자리
+            ("다음 ▶", lambda: self._nav(1)),
+            ("Y축 Min/Max", self._set_ylim),
+            ("Limit", self._limit_dialog),
+            ("임의선", self._custom_line_dialog),
+            ("텍스트", self._text_dialog),
+            ("Undo", self._undo),
+            ("Redo", self._redo),
+            ("⟲ 처음으로", self._reset_all),
+            ("Export PDF", self._export_pdf),
+        ]
+        n_tb = len(TOOLBAR)
+        for i, (label, cmd) in enumerate(TOOLBAR):
+            if label is None:
+                self.param_var = tk.StringVar()
+                self._labels = [self._label(p) for p in self.selected]
+                cb = ttk.Combobox(top, textvariable=self.param_var,
+                                  values=self._labels, width=55, state="readonly")
+                cb.pack(side="left", padx=3)
+                cb.bind("<<ComboboxSelected>>",
+                        lambda e: self._goto(self._labels.index(self.param_var.get())))
+                continue
+            ttk.Button(top, text=label, style=main_style(i, n_tb),
+                       command=cmd).pack(side="left", padx=3)
 
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True)
@@ -2193,15 +2679,17 @@ class App(BaseTk):
         ctrl = ttk.Frame(self.box_tab)
         ctrl.pack(fill="x")
         ttk.Label(ctrl, text="분석 모드:").pack(side="left", padx=(8, 3))
-        ttk.Radiobutton(ctrl, text="Test item별 분석 (기본)", variable=self.box_mode,
+        ttk.Radiobutton(ctrl, style="Mid.TRadiobutton",
+                        text="Test item별 분석 (기본)", variable=self.box_mode,
                         value="item", command=self._box_mode_changed).pack(side="left")
-        ttk.Radiobutton(ctrl, text="Phase별 분석", variable=self.box_mode,
+        ttk.Radiobutton(ctrl, style="Mid.TRadiobutton",
+                        text="Phase별 분석", variable=self.box_mode,
                         value="phase", command=self._box_mode_changed).pack(side="left", padx=8)
-        ttk.Button(ctrl, text="◀", width=3,
+        ttk.Button(ctrl, text="◀", width=3, style=mid_style(0, 3),
                    command=lambda: self._box_nav(-1)).pack(side="left", padx=(20, 2))
         self.box_page_lbl = ttk.Label(ctrl, text="")
         self.box_page_lbl.pack(side="left")
-        ttk.Button(ctrl, text="▶", width=3,
+        ttk.Button(ctrl, text="▶", width=3, style=mid_style(2, 3),
                    command=lambda: self._box_nav(1)).pack(side="left", padx=2)
 
         self.box_fig = Figure(figsize=(10, 5), facecolor=C_CARD)
@@ -2420,16 +2908,25 @@ class App(BaseTk):
 
     def _point_menu(self, lot, readout, col, phase, sample):
         ph_disp = "" if phase == NO_PHASE else f" [{phase}]"
-        m = tk.Menu(self, tearoff=0)
-        m.add_command(label=f"{lot}{ph_disp} | Sample {sample} @ {readout}",
-                      state="disabled")
+        # 서브 메뉴: 분홍/자주 계열, 위 → 아래로 진해짐
+        sub_cols = color_ramp(H_SUB, 0.42, 0.93, 0.58, 4)
+        m = tk.Menu(self, tearoff=0, bd=0, relief="flat",
+                    activeborderwidth=0, font=(UI_FONT, 10))
+        m.add_command(label=f"{lot}{ph_disp} | Sample {sample} @ {readout}", state="disabled",
+                      background=sub_cols[0], foreground="#3A1230")
         m.add_separator()
         m.add_command(label="Marker 색 변경 (삼각형 표시)",
+                      background=sub_cols[1], foreground=fg_for(sub_cols[1]),
+                      activebackground=darker(sub_cols[1]), activeforeground="#FFFFFF",
                       command=lambda: self._change_color(lot, readout, col, phase, sample))
         m.add_command(label="이 Read-out Marker만 삭제",
+                      background=sub_cols[2], foreground=fg_for(sub_cols[2]),
+                      activebackground=darker(sub_cols[2]), activeforeground="#FFFFFF",
                       command=lambda: (self.model.delete_point(lot, readout, col, phase, sample),
                                        self._redraw()))
         m.add_command(label="Sample 전체 삭제 (모든 Read-out)",
+                      background=sub_cols[3], foreground=fg_for(sub_cols[3]),
+                      activebackground=darker(sub_cols[3]), activeforeground="#FFFFFF",
                       command=lambda: (self.model.delete_sample_all_readouts(lot, col, phase, sample),
                                        self._redraw()))
         m.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
@@ -2488,9 +2985,12 @@ class App(BaseTk):
 
         btns = ttk.Frame(dlg)
         btns.grid(row=3, column=0, columnspan=2, pady=10)
-        ttk.Button(btns, text="적용", command=apply).pack(side="left", padx=5)
-        ttk.Button(btns, text="자동(초기화)", command=reset).pack(side="left", padx=5)
-        ttk.Button(btns, text="취소", command=dlg.destroy).pack(side="left", padx=5)
+        ttk.Button(btns, text="적용", style=pop_style(0, 3),
+                   command=apply).pack(side="left", padx=5)
+        ttk.Button(btns, text="자동(초기화)", style=pop_style(1, 3),
+                   command=reset).pack(side="left", padx=5)
+        ttk.Button(btns, text="취소", style=pop_style(2, 3),
+                   command=dlg.destroy).pack(side="left", padx=5)
         center_window(dlg)
 
     def _limit_dialog(self):
@@ -2549,8 +3049,10 @@ class App(BaseTk):
 
         btns = ttk.Frame(dlg)
         btns.grid(row=5, column=0, columnspan=4, pady=10)
-        ttk.Button(btns, text="적용", command=apply).pack(side="left", padx=5)
-        ttk.Button(btns, text="취소", command=dlg.destroy).pack(side="left", padx=5)
+        ttk.Button(btns, text="적용", style=pop_style(0, 2),
+                   command=apply).pack(side="left", padx=5)
+        ttk.Button(btns, text="취소", style=pop_style(1, 2),
+                   command=dlg.destroy).pack(side="left", padx=5)
         center_window(dlg)
 
     STYLES = [("실선", "-"), ("점선", ":"), ("파선", "--"), ("일점쇄선", "-.")]
@@ -2682,10 +3184,14 @@ class App(BaseTk):
 
         btns = ttk.Frame(dlg)
         btns.grid(row=6, column=0, columnspan=4, pady=10)
-        ttk.Button(btns, text="추가", command=add).pack(side="left", padx=4)
-        ttk.Button(btns, text="선택 수정", command=modify).pack(side="left", padx=4)
-        ttk.Button(btns, text="선택 삭제", command=remove).pack(side="left", padx=4)
-        ttk.Button(btns, text="닫기", command=dlg.destroy).pack(side="left", padx=4)
+        ttk.Button(btns, text="추가", style=pop_style(0, 4),
+                   command=add).pack(side="left", padx=4)
+        ttk.Button(btns, text="선택 수정", style=pop_style(1, 4),
+                   command=modify).pack(side="left", padx=4)
+        ttk.Button(btns, text="선택 삭제", style=pop_style(2, 4),
+                   command=remove).pack(side="left", padx=4)
+        ttk.Button(btns, text="닫기", style=pop_style(3, 4),
+                   command=dlg.destroy).pack(side="left", padx=4)
         refresh()
         center_window(dlg)
 
@@ -2814,10 +3320,14 @@ class App(BaseTk):
 
         btns = ttk.Frame(dlg)
         btns.grid(row=5, column=0, columnspan=4, pady=10)
-        ttk.Button(btns, text="추가", command=add).pack(side="left", padx=4)
-        ttk.Button(btns, text="선택 수정", command=modify).pack(side="left", padx=4)
-        ttk.Button(btns, text="선택 삭제", command=remove).pack(side="left", padx=4)
-        ttk.Button(btns, text="닫기", command=dlg.destroy).pack(side="left", padx=4)
+        ttk.Button(btns, text="추가", style=pop_style(0, 4),
+                   command=add).pack(side="left", padx=4)
+        ttk.Button(btns, text="선택 수정", style=pop_style(1, 4),
+                   command=modify).pack(side="left", padx=4)
+        ttk.Button(btns, text="선택 삭제", style=pop_style(2, 4),
+                   command=remove).pack(side="left", padx=4)
+        ttk.Button(btns, text="닫기", style=pop_style(3, 4),
+                   command=dlg.destroy).pack(side="left", padx=4)
         ttk.Label(dlg, text="※ 추가 후 그래프에서 텍스트를 드래그해 위치를 옮길 수 있습니다",
                   foreground="gray").grid(row=6, column=0, columnspan=4, pady=(0, 8))
         refresh()
