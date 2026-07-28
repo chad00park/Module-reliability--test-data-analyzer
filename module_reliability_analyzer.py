@@ -768,6 +768,10 @@ def load_logo_image(height):
         return None
 
 
+# 로고(높이 0.34in)가 차지하는 가로 폭 기준 제목 시작 위치 (13.33in 페이지)
+LOGO_TITLE_X = 0.085
+
+
 def add_pdf_logo(fig, h_in=0.34):
     """PDF 페이지 좌측 상단에 로고 (높이 0.34in, 종횡비 유지, 선명)."""
     try:
@@ -872,6 +876,22 @@ def setup_apple_style(root):
                         font=(UI_FONT, 10))
         style.map(f"Pop{i}.TButton",
                   background=[("active", darker(c)), ("pressed", darker(c, 0.14))])
+
+    # 다음 단계로 이동하는 버튼: 분홍 파스텔 단색 / 뒤로 가기: 훨씬 연한 분홍
+    c_next = shade(H_SUB, 0.55, 0.78)
+    style.configure("Next.TButton", background=c_next, foreground="#3A1230",
+                    bordercolor=c_next, lightcolor=c_next, darkcolor=c_next,
+                    borderwidth=1, relief="solid", padding=(14, 6),
+                    font=(UI_FONT, 10, "bold"))
+    style.map("Next.TButton",
+              background=[("active", darker(c_next)), ("pressed", darker(c_next, 0.14))])
+    c_back = shade(H_SUB, 0.45, 0.93)
+    style.configure("Back.TButton", background=c_back, foreground="#6B4459",
+                    bordercolor=c_back, lightcolor=c_back, darkcolor=c_back,
+                    borderwidth=1, relief="solid", padding=(12, 6),
+                    font=(UI_FONT, 10))
+    style.map("Back.TButton",
+              background=[("active", darker(c_back)), ("pressed", darker(c_back, 0.1))])
 
     style.configure("TSeparator", background=C_BORDER)
     style.configure("TCheckbutton", background=C_BG)
@@ -1893,7 +1913,9 @@ def draw_delta(ax, model, lot, col, screen=False, picker=False):
                   columnspacing=0.8)
     else:
         ax.text(0.5, 0.5, "Read-out 1개 — Delta 없음", transform=ax.transAxes,
-                ha="center", va="center", fontsize=9, color="gray")
+                ha="center", va="center", fontsize=9, color="gray",
+                fontfamily=["Malgun Gothic", "AppleGothic", "NanumGothic",
+                            "DejaVu Sans"])
     ax._overlay_args = (model, lot, col, "delta")
     ax.grid(True, alpha=0.3)
     artists["__texts__"] = []
@@ -1991,6 +2013,137 @@ def draw_box(ax, model, lot, col, phase=None, stacked=False,
 PPT_LANDSCAPE = (13.33, 7.5)
 
 
+
+def _delta_stats(model, group, col, readout):
+    """해당 Read-out의 전체 시료 Delta % (min, max, avg). 값 없으면 None."""
+    try:
+        res = model.delta_series(group, readout, col)
+    except Exception:
+        return None
+    ys = res[1]
+    vals = [y for y in ys if not math.isnan(y)]
+    if not vals:
+        return None
+    return min(vals), max(vals), sum(vals) / len(vals)
+
+
+MAX_BLOCKS_PER_PAGE = 8     # 한 페이지에 들어갈 (Lot x Read-out) 블록 수
+
+
+def draw_delta_summary(fig, model, rel, groups, cols, blocks, screen=False):
+    """Delta % 요약 표 1페이지.
+    행 = Parameter, 열 = Lot > Read-out > (Min/Max/Avg).
+    screen=True면 화면 탭용(로고 없음)."""
+    import matplotlib.patches as mpatches
+    # PDF에서는 좌측 상단 로고와 겹치지 않도록 제목을 오른쪽으로 밀어둔다
+    title_x = 0.035 if screen else LOGO_TITLE_X
+    fig.suptitle(f"{rel} — Delta % Summary (all samples)",
+                 fontsize=11, x=title_x, ha="left", y=0.955)
+    # 행 높이를 글자 크기(8pt) 기준으로 잡아 위·아래 여백이 과하지 않게 구성
+    FS = 8
+    fw, fh = fig.get_size_inches()
+    row_in = FS / 72.0 * 2.0          # 데이터 행 높이 (글자의 2배)
+    hdr_in = FS / 72.0 * 1.9          # 헤더 한 줄 높이
+    top_margin, bot_margin = (0.085 if screen else 0.125), 0.05
+    tbl_in = hdr_in * 3 + row_in * max(len(cols), 1)
+    avail_in = fh * (1 - top_margin - bot_margin)
+    if tbl_in > avail_in:             # 항목이 많으면 자동 축소
+        k = avail_in / tbl_in
+        row_in *= k
+        hdr_in *= k
+        FS = max(5.5, FS * k)
+        tbl_in = avail_in
+    tbl_frac = tbl_in / fh
+    ax = fig.add_axes([0.035, 1 - top_margin - tbl_frac, 0.93, tbl_frac])
+    ax.axis("off")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+
+    P_W = 0.155
+    n_blk = max(len(blocks), 1)
+    blk_w = (1 - P_W) / n_blk
+    h = (hdr_in / fh) / tbl_frac      # 축 좌표계 기준 헤더 행 높이
+    top = 1.0
+    head_c = [shade(H_MAIN, 0.42, 0.72), shade(H_MAIN, 0.40, 0.82),
+              shade(H_MAIN, 0.36, 0.90)]
+    edge = "#C9C9D0"
+    strong = "#5B5B66"
+
+    # Parameter 헤더
+    ax.add_patch(mpatches.Rectangle((0, top - 3 * h), P_W, 3 * h,
+                                    facecolor="#F2F2F5", edgecolor=edge, lw=0.6))
+    ax.text(0.008, top - 1.5 * h, "Parameter", fontsize=FS,
+            fontweight="bold", va="center")
+
+    # Lot / Read-out / Min·Max·Avg 헤더
+    _lot_seps = []
+    x = P_W
+    gi = 0
+    while gi < len(blocks):
+        g = blocks[gi][0]
+        gx0 = x
+        while gi < len(blocks) and blocks[gi][0] == g:
+            r = blocks[gi][1]
+            ax.add_patch(mpatches.Rectangle((x, top - 2 * h), blk_w, h,
+                                            facecolor=head_c[1], edgecolor=edge, lw=0.6))
+            ax.text(x + blk_w / 2, top - 1.5 * h, r, fontsize=FS - 0.5,
+                    fontweight="bold", ha="center", va="center")
+            for k, lab in enumerate(("Min", "Max", "Avg")):
+                cx = x + blk_w * k / 3
+                ax.add_patch(mpatches.Rectangle((cx, top - 3 * h), blk_w / 3, h,
+                                                facecolor=head_c[2], edgecolor=edge, lw=0.5))
+                ax.text(cx + blk_w / 6, top - 2.5 * h, lab, fontsize=FS - 1,
+                        fontweight="bold", ha="center", va="center")
+            x += blk_w
+            gi += 1
+        ax.add_patch(mpatches.Rectangle((gx0, top - h), x - gx0, h,
+                                        facecolor=head_c[0], edgecolor=edge, lw=0.6))
+        ax.text((gx0 + x) / 2, top - 0.5 * h, model.group_lot(g), fontsize=FS + 0.5,
+                fontweight="bold", ha="center", va="center")
+        _lot_seps.append(gx0)
+
+    # 본문
+    y0 = top - 3 * h
+    rh = (row_in / fh) / tbl_frac
+    fs = FS - 0.5
+    for pi, col in enumerate(cols):
+        yy = y0 - (pi + 1) * rh
+        band = "#FAFAFC" if pi % 2 else "#FFFFFF"
+        ax.add_patch(mpatches.Rectangle((0, yy), P_W, rh, facecolor=band,
+                                        edgecolor=edge, lw=0.4))
+        ax.text(0.008, yy + rh / 2, col_title(col), fontsize=fs, va="center")
+        x = P_W
+        for g, r in blocks:
+            s = _delta_stats(model, g, col, r)
+            for k in range(3):
+                cx = x + blk_w * k / 3
+                ax.add_patch(mpatches.Rectangle((cx, yy), blk_w / 3, rh,
+                                                facecolor=band, edgecolor=edge, lw=0.4))
+                txt = "—" if s is None else f"{s[k]:.2f}"
+                ax.text(cx + blk_w / 6, yy + rh / 2, txt, fontsize=fs,
+                        ha="center", va="center")
+            x += blk_w
+    y_bot = y0 - rh * len(cols)
+    for _xs in _lot_seps:
+        ax.plot([_xs, _xs], [y_bot, top], color=strong, lw=1.4)
+    ax.plot([0, 1], [top - 3 * h, top - 3 * h], color=strong, lw=1.4)
+    ax.plot([0, 1], [y_bot, y_bot], color=strong, lw=1.4)
+    ax.plot([P_W, P_W], [y_bot, top], color=strong, lw=1.0)
+    ax.plot([1, 1], [y_bot, top], color=strong, lw=1.4)
+    fig.text(0.035, 1 - top_margin - tbl_frac - 0.028,
+             "Delta % statistics of all samples (vs. first read-out).  Unit: %",
+             fontsize=7.5, color="#6E6E73")
+
+
+def summary_blocks(model, groups):
+    """(group, readout) 블록 목록 — 기준 Read-out 제외."""
+    out = []
+    for g in groups:
+        for r in model.readouts(g)[1:]:
+            out.append((g, r))
+    return out
+
+
 def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
     """pairs: [(lot, col)]. col은 반복 item 또는 공통 item."""
     per_lot = {}
@@ -2014,15 +2167,30 @@ def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
         plan[g] = (cols, phase_units, n_pair, n_boxA, n_boxB)
         total += n_pair + n_boxA + n_boxB
 
+    # Rel test 항목별 묶기 (표 입력 순서 유지)
+    rel_order, rel_groups = [], {}
+    for g in order:
+        rel = model.group_rel(g)
+        if rel not in rel_groups:
+            rel_groups[rel] = []
+            rel_order.append(rel)
+        rel_groups[rel].append(g)
+    for rel in rel_order:
+        total += max(1, math.ceil(len(summary_blocks(model, rel_groups[rel]))
+                                  / MAX_BLOCKS_PER_PAGE))
+
     done = 0
     with PdfPages(path) as pdf:
-        for g in order:
+      for rel in rel_order:
+        # --- Rel test 항목: Lot별 그래프 → Delta % 요약 표 → Lot별 Box plot ---
+        for g in rel_groups[rel]:
             cols, phase_units, n_pair, n_boxA, n_boxB = plan[g]
-            head = f"{model.reliability}: {g}"
+            head = f"{model.group_rel(g)}: {model.group_lot(g)}"
             # 1) item별 Read-out + Delta % 쌍 (1페이지 1줄1개 x 4줄 = item 2개분)
             for i in range(0, len(cols), 2):
                 fig = Figure(figsize=PPT_LANDSCAPE)
-                fig.suptitle(f"{head} — Read-out & Delta %", fontsize=11)
+                fig.suptitle(f"{head} — Read-out & Delta %", fontsize=11,
+                             x=0.55)
                 for k in range(2):
                     ax1 = fig.add_subplot(4, 1, 2 * k + 1)
                     ax2 = fig.add_subplot(4, 1, 2 * k + 2)
@@ -2046,10 +2214,33 @@ def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
                 done += 1
                 if progress_cb:
                     progress_cb(done, total)
+        # Delta % 요약 표 (Rel test 항목당 1개, Box plot 앞)
+        _gs = rel_groups[rel]
+        _cols, _seen = [], set()
+        for _g in _gs:
+            for _c in plan[_g][0]:
+                if _c not in _seen:
+                    _seen.add(_c)
+                    _cols.append(_c)
+        _blocks = summary_blocks(model, _gs)
+        for _bi in range(0, max(len(_blocks), 1), MAX_BLOCKS_PER_PAGE):
+            fig = Figure(figsize=PPT_LANDSCAPE)
+            draw_delta_summary(fig, model, rel, _gs, _cols,
+                               _blocks[_bi:_bi + MAX_BLOCKS_PER_PAGE])
+            add_pdf_logo(fig)
+            pdf.savefig(fig, dpi=200)
+            done += 1
+            if progress_cb:
+                progress_cb(done, total)
+
+        for g in rel_groups[rel]:
+            cols, phase_units, n_pair, n_boxA, n_boxB = plan[g]
+            head = f"{model.group_rel(g)}: {model.group_lot(g)}"
             # 2) Box plot — Test item별 분석 (기본, phase stack, 3개 x 2줄)
             for i in range(0, len(cols), 6):
                 fig = Figure(figsize=PPT_LANDSCAPE)
-                fig.suptitle(f"{head} — Box plot (by Test item)", fontsize=12)
+                fig.suptitle(f"{head} — Box plot (by Test item)", fontsize=12,
+                             x=0.55)
                 for k in range(6):
                     ax = fig.add_subplot(2, 3, k + 1)
                     if i + k < len(cols):
@@ -2071,7 +2262,8 @@ def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
             # 3) Box plot — Phase별 분석 (선택 시에만 포함, 3개 x 2줄)
             for i in range(0, len(phase_units), 6):
                 fig = Figure(figsize=PPT_LANDSCAPE)
-                fig.suptitle(f"{head} — Box plot (by Phase)", fontsize=12)
+                fig.suptitle(f"{head} — Box plot (by Phase)", fontsize=12,
+                             x=0.55)
                 for k in range(6):
                     ax = fig.add_subplot(2, 3, k + 1)
                     if i + k < len(phase_units):
@@ -2155,8 +2347,9 @@ class App(BaseTk):
             w.destroy()
         if not getattr(self, "rows", None):
             self.rows = [self._new_row()]
-        self._sel_row = 0
-        self._pending_file = None      # 클릭 이동 중인 파일 (row_idx, file_idx)
+        self._sel_rows = {0}          # 다중 선택 (Shift/Ctrl)
+        self._anchor_row = 0
+        self._drag = None             # 파일 드래그 상태
 
         frm = ttk.Frame(self, padding=(20, 12, 20, 14))
         frm.pack(fill="both", expand=True)
@@ -2169,26 +2362,26 @@ class App(BaseTk):
 
         tb = ttk.Frame(frm)
         tb.pack(fill="x", pady=(0, 8))
-        # 메인 툴바: 왼쪽 → 오른쪽으로 농도가 진해짐
         TB = [
             ("+ 행 추가", self._row_add),
             ("선택 위에 삽입", self._row_insert),
             ("선택 행 삭제", self._row_delete),
             ("↑", lambda: self._row_move(-1)),
             ("↓", lambda: self._row_move(1)),
+            ("전체 선택", self._select_all_rows),
             ("파일 넣기…", self._browse),
             ("파일 비우기", self._row_clear_files),
-            ("⟲ 처음으로", self._reset_all),
-            ("다음 (파일 읽기)", self._load_files),
         ]
-        n_tb = len(TB)
         for i, (label, cmd) in enumerate(TB):
-            w = 3 if label in ("↑", "↓") else None
-            kw = {"width": w} if w else {}
-            ttk.Button(tb, text=label, style=main_style(i, n_tb),
+            kw = {"width": 3} if label in ("↑", "↓") else {}
+            ttk.Button(tb, text=label, style=main_style(i, len(TB)),
                        command=cmd, **kw).pack(side="left", padx=3)
+        # 다음 단계 버튼: 분홍 파스텔 / 뒤로 가기: 연한 분홍
+        ttk.Button(tb, text="다음 (파일 읽기)", style="Next.TButton",
+                   command=self._load_files).pack(side="right", padx=3)
+        ttk.Button(tb, text="⟲ 처음으로", style="Back.TButton",
+                   command=self._reset_all).pack(side="right", padx=3)
 
-        # 표 영역 (Canvas + 스크롤)
         wrap = tk.Frame(frm, bg=C_CARD, highlightthickness=1,
                         highlightbackground=C_BORDER)
         wrap.pack(fill="both", expand=True)
@@ -2213,17 +2406,29 @@ class App(BaseTk):
 
         tip = tk.Label(frm, bg=C_TINT, fg="#0A5BC4", justify="left",
                        font=(UI_FONT, 9), padx=12, pady=8,
-                       text="· 파일을 표 위로 끌어다 놓으면 빈 칸부터 순서대로 채워집니다.    "
-                            "· 파일을 드래그하거나, 파일 클릭 후 옮길 행을 클릭하면 위치를 바꿀 수 있습니다.\n"
-                            "· Retest 행에는 파일을 여러 개 넣을 수 있고, 넣은 순서대로 retest1, retest2 … 로 표시됩니다.    "
-                            "· 파일을 더블클릭하면 삭제됩니다.    · CSV / Excel(xlsx, xls) 파일을 사용합니다.")
+                       text="· 빈 Data upload 칸을 클릭하면 파일 선택 창이 열립니다. "
+                            "표 위로 파일을 끌어다 놓아도 됩니다.\n"
+                            "· 파일을 드래그하면 다른 행으로 옮길 수 있고, 더블클릭하면 삭제됩니다.    "
+                            "· 행 번호를 Shift/Ctrl 클릭하면 여러 행을 함께 선택·삭제·이동할 수 있습니다.\n"
+                            "· Retest 행에는 파일을 여러 개 넣을 수 있고, 넣은 순서대로 "
+                            "retest1, retest2 … 로 표시됩니다.    · CSV / Excel(xlsx, xls) 파일을 사용합니다.")
         tip.pack(fill="x", pady=(8, 0))
 
         self._render_table()
+        # 첫 행 Rel test 칸에 커서
+        self.after(120, self._focus_first_cell)
 
     def _new_row(self, rel="", lot="", ro="", retest=False):
         return {"rel": rel, "lot": lot, "readout": ro,
                 "retest": retest, "files": []}
+
+    def _focus_first_cell(self):
+        try:
+            e = self._entries[0]["rel"]
+            e.focus_set()
+            e.icursor("end")
+        except Exception:
+            pass
 
     def _on_wheel(self, event):
         try:
@@ -2231,75 +2436,147 @@ class App(BaseTk):
         except Exception:
             pass
 
+    NUM_W = 42
     COL_W = [170, 90, 160, 80]   # Rel test / Lot# / Read-out / Retest
+    PLACEHOLDER = {"rel": "예) HTRB", "lot": "예) 1", "readout": "예) 0hr"}
 
     def _render_table(self):
         for w in self.tbl_body.winfo_children():
             w.destroy()
-        hdr = tk.Frame(self.tbl_body, bg="#F7F7FA")
+        hdr = tk.Frame(self.tbl_body, bg="#F7F7FA", height=32)
         hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="#", bg="#F7F7FA", fg=C_SUBTXT,
+                 font=(UI_FONT, 9)).place(x=12, y=8)
         for i, (name, w_) in enumerate(zip(
                 ["Rel test", "Lot#", "Read-out", "Retest"], self.COL_W)):
             tk.Label(hdr, text=name, bg="#F7F7FA", fg=C_TEXT, anchor="w",
-                     font=(UI_FONT, 10, "bold"), width=0).place(
-                x=sum(self.COL_W[:i]) + 10, y=8)
+                     font=(UI_FONT, 10, "bold")).place(
+                x=self.NUM_W + sum(self.COL_W[:i]) + 10, y=8)
         tk.Label(hdr, text="Data upload", bg="#F7F7FA", fg=C_TEXT, anchor="w",
-                 font=(UI_FONT, 10, "bold")).place(x=sum(self.COL_W) + 10, y=8)
-        hdr.configure(height=32)
-        hdr.pack_propagate(False)
+                 font=(UI_FONT, 10, "bold")).place(
+            x=self.NUM_W + sum(self.COL_W) + 10, y=8)
 
         self._row_frames = []
+        self._entries = []
         for i, row in enumerate(self.rows):
             self._render_row(i, row)
 
-    def _group_start(self, i):
-        """이 행이 새 그룹(Rel test/Lot# 조합 변경)의 시작인지."""
-        row = self.rows[i]
-        if i == 0:
-            return True
-        prev = self.rows[i - 1]
-        return (row["rel"].strip().upper(), row["lot"].strip()) != \
-               (prev["rel"].strip().upper(), prev["lot"].strip())
+    # ---- 그룹 경계 판정 ----------------------------------------------------
+    def _rel_of(self, i):
+        return self._effective(i, "rel").upper()
+
+    def _lot_of(self, i):
+        return self._effective(i, "lot")
+
+    def _rel_start(self, i):
+        return i == 0 or self._rel_of(i) != self._rel_of(i - 1)
+
+    def _rel_end(self, i):
+        return i == len(self.rows) - 1 or self._rel_of(i + 1) != self._rel_of(i)
+
+    def _lot_start(self, i):
+        return i == 0 or (self._rel_of(i), self._lot_of(i)) != \
+            (self._rel_of(i - 1), self._lot_of(i - 1))
+
+    def _lot_end(self, i):
+        return i == len(self.rows) - 1 or \
+            (self._rel_of(i + 1), self._lot_of(i + 1)) != \
+            (self._rel_of(i), self._lot_of(i))
 
     def _effective(self, i, key):
-        """비워둔 칸은 위 행의 값을 물려받음 (표시는 비어 있어도 분석에 사용)."""
+        """비워둔 칸은 위 행의 값을 물려받음."""
         for j in range(i, -1, -1):
             v = self.rows[j].get(key, "").strip()
             if v:
                 return v
         return ""
 
+    def _row_blank(self, i):
+        """행이 완전히 비어 있는지 (예시 문구는 이때만 표시)."""
+        r = self.rows[i]
+        return not (r["rel"].strip() or r["lot"].strip() or
+                    r["readout"].strip() or r["files"] or r["retest"])
+
+    REL_BORDER = "#5B5B66"    # Rel test 그룹: 가장 진한 테두리
+    LOT_BORDER = "#A8A8B2"    # Lot 그룹: 조금 덜 진한 테두리
+
     def _render_row(self, i, row):
-        bg = C_TINT if i == self._sel_row else C_CARD
-        fr = tk.Frame(self.tbl_body, bg=bg, height=34)
-        fr.pack(fill="x")
+        selected = i in self._sel_rows
+        bg = C_TINT if selected else C_CARD
+        # Rel/Lot 그룹 경계선 (위)
+        if self._rel_start(i):
+            tk.Frame(self.tbl_body, bg=self.REL_BORDER, height=3).pack(fill="x")
+        elif self._lot_start(i):
+            tk.Frame(self.tbl_body, bg=self.LOT_BORDER, height=2).pack(fill="x")
+        else:
+            tk.Frame(self.tbl_body, bg="#EDEDF1", height=1).pack(fill="x")
+
+        outer = tk.Frame(self.tbl_body, bg=self.REL_BORDER)
+        outer.pack(fill="x")
+        # 좌우 세로 테두리 두께로 그룹 표현
+        lw = 3 if True else 1
+        fr = tk.Frame(outer, bg=bg, height=34)
+        fr.pack(fill="x", padx=(3, 3))
         fr.pack_propagate(False)
         self._row_frames.append(fr)
-        # 그룹 구분선
-        sep = tk.Frame(self.tbl_body, bg="#B9B9C0" if self._group_start(i) and i > 0
-                       else "#EDEDF1", height=2 if self._group_start(i) and i > 0 else 1)
-        sep.pack(fill="x", before=fr)
+        fr.bind("<Button-1>", lambda e, idx=i: self._row_click(e, idx))
 
-        fr.bind("<Button-1>", lambda e, idx=i: self._select_row(idx))
+        # 행 번호 (선택용)
+        num = tk.Label(fr, text=str(i + 1), bg=bg,
+                       fg=C_ACCENT if selected else C_SUBTXT,
+                       font=(UI_FONT, 9, "bold" if selected else "normal"),
+                       cursor="hand2")
+        num.place(x=10, y=9, width=self.NUM_W - 18)
+        num.bind("<Button-1>", lambda e, idx=i: self._row_click(e, idx))
 
-        def entry(col, x, w, var_key, bold=False):
-            var = tk.StringVar(value=row[var_key])
+        ents = {}
+
+        def entry(x, w, key, bold=False):
+            var = tk.StringVar(value=row[key])
             e = tk.Entry(fr, textvariable=var, relief="flat", bg=bg, fg=C_TEXT,
                          font=(UI_FONT, 10, "bold" if bold else "normal"),
                          highlightthickness=1, highlightbackground=bg,
-                         highlightcolor=C_ACCENT, bd=0)
+                         highlightcolor=C_ACCENT, bd=0, insertbackground=C_ACCENT)
             e.place(x=x + 8, y=6, width=w - 16, height=22)
-            e.bind("<FocusIn>", lambda ev, idx=i: self._select_row(idx, keep=True))
-            var.trace_add("write",
-                          lambda *a, idx=i, k=var_key, v=var: self._cell_edit(idx, k, v))
+            ph = self.PLACEHOLDER.get(key, "") if self._row_blank(i) else ""
+
+            def show_ph():
+                if ph and not var.get():
+                    e.configure(fg="#BFBFC6")
+                    e._ph = True
+                    var.set(ph)
+
+            def hide_ph(_ev=None):
+                if getattr(e, "_ph", False):
+                    var.set("")
+                    e._ph = False
+                e.configure(fg=C_TEXT, highlightbackground=C_ACCENT)
+
+            def on_out(_ev=None, idx=i, k=key):
+                e.configure(highlightbackground=bg)
+                if not var.get():
+                    show_ph()
+                self.after_idle(lambda: self._cell_done(idx, k))
+            e.bind("<FocusIn>", lambda ev, idx=i: (hide_ph(),
+                                                   self._select_row(idx)))
+            e.bind("<FocusOut>", on_out)
+            e.bind("<Return>", lambda ev, idx=i, k=key:
+                   (self._cell_done(idx, k), "break"))
+            var.trace_add("write", lambda *a, idx=i, k=key, v=var, ee=e:
+                          (None if getattr(ee, "_ph", False)
+                           else self._cell_edit(idx, k, v)))
+            if not row[key]:
+                show_ph()
+            ents[key] = e
             return e
 
-        x = 0
-        entry(0, x, self.COL_W[0], "rel", bold=True); x += self.COL_W[0]
-        entry(1, x, self.COL_W[1], "lot"); x += self.COL_W[1]
-        entry(2, x, self.COL_W[2], "readout"); x += self.COL_W[2]
+        x = self.NUM_W
+        entry(x, self.COL_W[0], "rel", bold=True); x += self.COL_W[0]
+        entry(x, self.COL_W[1], "lot"); x += self.COL_W[1]
+        entry(x, self.COL_W[2], "readout"); x += self.COL_W[2]
+        self._entries.append(ents)
 
-        # Retest 체크박스
         rv = tk.BooleanVar(value=row["retest"])
         cb = tk.Checkbutton(fr, variable=rv, bg=bg, activebackground=bg,
                             highlightthickness=0, bd=0,
@@ -2307,23 +2584,18 @@ class App(BaseTk):
         cb.place(x=x + self.COL_W[3] // 2 - 10, y=7)
         x += self.COL_W[3]
 
-        # 파일 태그
         fx = x + 8
         if row["files"]:
             for k, p in enumerate(row["files"]):
-                name = os.path.basename(p)
-                sel = (self._pending_file == (i, k))
-                tag = tk.Label(fr, text=name, bg="#CDE3FF" if sel else "#EEF6FF",
+                tag = tk.Label(fr, text=os.path.basename(p), bg="#EEF6FF",
                                fg="#0A5BC4", font=(UI_FONT, 9), padx=8, pady=2,
-                               cursor="hand2")
+                               cursor="fleur")
                 tag.place(x=fx, y=6)
                 tag.update_idletasks()
-                tag.bind("<Button-1>",
-                         lambda e, idx=i, fi=k: self._file_click(idx, fi))
-                tag.bind("<B1-Motion>",
-                         lambda e, idx=i, fi=k: self._file_drag(e, idx, fi))
-                tag.bind("<ButtonRelease-1>",
-                         lambda e, idx=i, fi=k: self._file_drop(e, idx, fi))
+                tag.bind("<ButtonPress-1>",
+                         lambda e, idx=i, fi=k: self._drag_begin(e, idx, fi))
+                tag.bind("<B1-Motion>", self._drag_move)
+                tag.bind("<ButtonRelease-1>", self._drag_end)
                 tag.bind("<Double-Button-1>",
                          lambda e, idx=i, fi=k: self._file_remove(idx, fi))
                 fx += tag.winfo_reqwidth() + 6
@@ -2331,55 +2603,86 @@ class App(BaseTk):
                 tags = ", ".join(f"retest{k + 1}" for k in range(len(row["files"])))
                 tk.Label(fr, text=f"→ {tags}", bg=bg, fg=C_SUBTXT,
                          font=(UI_FONT, 8)).place(x=fx + 2, y=9)
+        # 빈 영역: 클릭하면 파일 선택 창
+        empty = tk.Label(fr, text="+ 클릭해서 파일 선택" if not row["files"] else "",
+                         bg=bg, fg="#B4B4BA", font=(UI_FONT, 9), anchor="w",
+                         cursor="hand2")
+        empty.place(x=fx, y=8, width=max(200, 520 - (fx - x)))
+        empty.bind("<Button-1>", lambda e, idx=i: self._pick_for_row(idx))
+
+    # ---- 행 선택 -----------------------------------------------------------
+    def _row_click(self, event, idx):
+        ctrl = bool(event.state & 0x0004)
+        shift = bool(event.state & 0x0001)
+        if shift and self._anchor_row is not None:
+            a, b = sorted((self._anchor_row, idx))
+            self._sel_rows = set(range(a, b + 1))
+        elif ctrl:
+            self._sel_rows.symmetric_difference_update({idx})
+            self._anchor_row = idx
         else:
-            lb = tk.Label(fr, text="파일을 여기로 끌어다 놓거나 [파일 넣기…] 클릭",
-                          bg=bg, fg="#B4B4BA", font=(UI_FONT, 9))
-            lb.place(x=fx, y=8)
-            lb.bind("<Button-1>", lambda e, idx=i: self._select_row(idx))
+            self._sel_rows = {idx}
+            self._anchor_row = idx
+        if not self._sel_rows:
+            self._sel_rows = {idx}
+        self._render_table()
 
-    # ---- 표 편집 -----------------------------------------------------------
-    def _select_row(self, idx, keep=False):
-        # 클릭 이동 대기 중인 파일이 있으면 이 행으로 옮김
-        if self._pending_file is not None and not keep:
-            src_i, src_k = self._pending_file
-            if src_i != idx:
-                p = self.rows[src_i]["files"].pop(src_k)
-                self.rows[idx]["files"].append(p)
-            self._pending_file = None
-            self._sel_row = idx
-            self._render_table()
-            return
-        self._sel_row = idx
-        for j, fr in enumerate(getattr(self, "_row_frames", [])):
-            try:
-                bg = C_TINT if j == idx else C_CARD
-                fr.configure(bg=bg)
-                for ch in fr.winfo_children():
-                    if isinstance(ch, (tk.Entry, tk.Checkbutton)):
-                        ch.configure(bg=bg)
-                    elif isinstance(ch, tk.Label) and ch.cget("fg") in (C_SUBTXT, "#B4B4BA"):
-                        ch.configure(bg=bg)
-            except tk.TclError:
-                pass
+    def _select_row(self, idx):
+        if idx not in self._sel_rows:
+            self._sel_rows = {idx}
+            self._anchor_row = idx
 
+    def _select_all_rows(self):
+        self._sel_rows = set(range(len(self.rows)))
+        self._render_table()
+
+    @property
+    def _sel_row(self):
+        return min(self._sel_rows) if self._sel_rows else 0
+
+    # ---- 행 편집 -----------------------------------------------------------
     def _cell_edit(self, idx, key, var):
-        val = var.get()
-        old = self.rows[idx][key]
-        self.rows[idx][key] = val
-        # Rel test 입력 시 표준 Read-out 자동 채움 (아래가 비어 있을 때만)
-        if key == "rel" and val.strip() and val.strip().upper() != old.strip().upper():
+        """입력 중에는 값만 저장 (표를 다시 그리지 않아야 타이핑이 끊기지 않음)."""
+        self.rows[idx][key] = var.get()
+
+    def _cell_done(self, idx, key):
+        """칸 입력이 끝났을 때(포커스 이동/Enter) 프리셋·테두리 갱신."""
+        val = self.rows[idx][key].strip()
+        if key == "rel" and val:
             ros = preset_readouts(val)
-            if ros:
-                self.after(400, lambda idx=idx, ros=ros, v=val: self._apply_preset(idx, ros, v))
+            if ros and not self.rows[idx]["readout"].strip() \
+                    and not self.rows[idx]["files"]:
+                self._apply_preset(idx, ros, self.rows[idx]["rel"])
+                return
+        elif key == "lot" and val:
+            if not self.rows[idx]["readout"].strip() and not self.rows[idx]["files"]:
+                self._apply_lot_preset(idx, self.rows[idx]["lot"])
+                return
+        self._render_table()
 
     def _apply_preset(self, idx, ros, val):
         if idx >= len(self.rows) or self.rows[idx]["rel"].strip() != val.strip():
             return
         row = self.rows[idx]
         if row["readout"].strip() or row["files"]:
-            return   # 이미 채워진 행은 건드리지 않음
+            return
         if not row["lot"].strip():
             row["lot"] = "1"
+        row["readout"] = ros[0]
+        for k, ro in enumerate(ros[1:], start=1):
+            self.rows.insert(idx + k, self._new_row(ro=ro))
+        self._render_table()
+
+    def _apply_lot_preset(self, idx, val):
+        """Lot#을 입력해 새 Lot 그룹이 생기면 해당 Rel의 표준 Read-out을 채움."""
+        if idx >= len(self.rows) or self.rows[idx]["lot"].strip() != val.strip():
+            return
+        row = self.rows[idx]
+        rel = self._effective(idx, "rel")
+        ros = preset_readouts(rel)
+        if not ros or row["readout"].strip() or row["files"]:
+            self._render_table()
+            return
         row["readout"] = ros[0]
         for k, ro in enumerate(ros[1:], start=1):
             self.rows.insert(idx + k, self._new_row(ro=ro))
@@ -2391,49 +2694,78 @@ class App(BaseTk):
 
     def _row_add(self):
         self.rows.append(self._new_row())
-        self._sel_row = len(self.rows) - 1
+        self._sel_rows = {len(self.rows) - 1}
         self._render_table()
 
     def _row_insert(self):
-        self.rows.insert(self._sel_row, self._new_row())
+        at = self._sel_row
+        self.rows.insert(at, self._new_row())
+        self._sel_rows = {at}
         self._render_table()
 
     def _row_delete(self):
-        if len(self.rows) <= 1:
-            self.rows = [self._new_row()]
-        else:
-            del self.rows[self._sel_row]
-            self._sel_row = min(self._sel_row, len(self.rows) - 1)
+        keep = [r for i, r in enumerate(self.rows) if i not in self._sel_rows]
+        self.rows = keep or [self._new_row()]
+        self._sel_rows = {min(self._sel_row, len(self.rows) - 1)}
         self._render_table()
 
     def _row_move(self, d):
-        i = self._sel_row
-        j = i + d
-        if 0 <= j < len(self.rows):
+        idxs = sorted(self._sel_rows, reverse=(d > 0))
+        if not idxs:
+            return
+        if d < 0 and min(idxs) == 0:
+            return
+        if d > 0 and max(idxs) == len(self.rows) - 1:
+            return
+        for i in idxs:
+            j = i + d
             self.rows[i], self.rows[j] = self.rows[j], self.rows[i]
-            self._sel_row = j
-            self._render_table()
-
-    def _row_clear_files(self):
-        self.rows[self._sel_row]["files"] = []
+        self._sel_rows = {i + d for i in self._sel_rows}
+        self._anchor_row = (self._anchor_row + d) if self._anchor_row is not None else None
         self._render_table()
 
-    # ---- 파일 넣기 / 이동 --------------------------------------------------
-    def _browse(self):
-        paths = filedialog.askopenfilenames(
+    def _row_clear_files(self):
+        for i in self._sel_rows:
+            self.rows[i]["files"] = []
+        self._render_table()
+
+    # ---- 파일 넣기 ---------------------------------------------------------
+    def _ask_files(self):
+        return filedialog.askopenfilenames(
             filetypes=[("Data files", "*.csv *.xlsx *.xlsm *.xls"), ("All", "*.*")])
+
+    def _browse(self):
+        paths = self._ask_files()
         if paths:
             self._assign_files(list(paths), start=self._sel_row)
+
+    def _pick_for_row(self, idx):
+        """빈 Data upload 칸 클릭 → 그 행에 바로 넣기."""
+        self._sel_rows = {idx}
+        paths = self._ask_files()
+        if not paths:
+            self._render_table()
+            return
+        paths = list(paths)
+        if self.rows[idx]["retest"]:
+            self.rows[idx]["files"].extend(paths)
+            self._render_table()
+        else:
+            self.rows[idx]["files"].append(paths[0])
+            if len(paths) > 1:
+                self._assign_files(paths[1:], start=idx + 1)
+            else:
+                self._render_table()
 
     def _on_drop_files(self, event):
         paths = [p.strip("{}") for p in self.tk.splitlist(event.data)]
         paths = [p for p in paths if p]
         if not paths:
             return
-        # 드롭 지점의 행부터 채움
         start = self._row_at_y(event.y_root)
         if start is not None and self.rows[start]["retest"]:
-            self._drop_on_row(start, paths)      # Retest 행: 여러 파일 모두 추가
+            self.rows[start]["files"].extend(paths)
+            self._render_table()
         else:
             self._assign_files(paths, start=start if start is not None
                                else self._sel_row)
@@ -2449,8 +2781,7 @@ class App(BaseTk):
         return None
 
     def _assign_files(self, paths, start=0):
-        """빈 칸부터 순서대로 한 행에 하나씩 채움.
-        (Retest 행에 여러 파일을 넣으려면 그 행에 직접 드롭하거나 드래그해 옮깁니다.)"""
+        """빈 칸부터 순서대로 한 행에 하나씩."""
         i = start
         for p in paths:
             while i < len(self.rows) and self.rows[i]["files"]:
@@ -2461,41 +2792,73 @@ class App(BaseTk):
             i += 1
         self._render_table()
 
-    def _drop_on_row(self, idx, paths):
-        """특정 행에 직접 드롭: 그 행에 모두 추가 (Retest 다중 파일용)."""
-        for p in paths:
-            self.rows[idx]["files"].append(p)
-        self._render_table()
+    # ---- 파일 드래그 이동 (고스트 표시) ------------------------------------
+    def _drag_begin(self, event, idx, fi):
+        self._drag = {"row": idx, "fi": fi, "moved": False, "ghost": None,
+                      "last": None}
 
-    def _file_click(self, idx, fi):
-        self._pending_file = (idx, fi)
-        self._drag_start = True
-        self._render_table()
-
-    def _file_drag(self, event, idx, fi):
-        self._dragging = True
-
-    def _file_drop(self, event, idx, fi):
-        if not getattr(self, "_dragging", False):
-            return      # 단순 클릭 → 클릭-이동 대기 상태 유지
-        self._dragging = False
+    def _drag_move(self, event):
+        d = getattr(self, "_drag", None)
+        if not d:
+            return
+        d["moved"] = True
+        name = os.path.basename(self.rows[d["row"]]["files"][d["fi"]])
+        if d["ghost"] is None:
+            g = tk.Toplevel(self)
+            g.overrideredirect(True)
+            try:
+                g.attributes("-alpha", 0.85)
+                g.attributes("-topmost", True)
+            except tk.TclError:
+                pass
+            tk.Label(g, text=name, bg="#CDE3FF", fg="#0A5BC4",
+                     font=(UI_FONT, 9), padx=8, pady=3,
+                     highlightthickness=1,
+                     highlightbackground="#7FB3F5").pack()
+            d["ghost"] = g
+        d["ghost"].geometry(f"+{event.x_root + 14}+{event.y_root + 12}")
+        # 지나가는 행 하이라이트
         target = self._row_at_y(event.y_root)
-        if target is not None and target != idx:
-            p = self.rows[idx]["files"].pop(fi)
-            self.rows[target]["files"].append(p)   # 기존 파일과 함께 유지
-            self._pending_file = None
-            self._sel_row = target
+        if target != d["last"]:
+            for j, fr in enumerate(self._row_frames):
+                try:
+                    if j == target:
+                        fr.configure(bg="#DCEEFF")
+                    else:
+                        fr.configure(bg=C_TINT if j in self._sel_rows else C_CARD)
+                except tk.TclError:
+                    pass
+            d["last"] = target
+
+    def _drag_end(self, event):
+        d = getattr(self, "_drag", None)
+        self._drag = None
+        if not d:
+            return
+        if d["ghost"] is not None:
+            try:
+                d["ghost"].destroy()
+            except tk.TclError:
+                pass
+        if not d["moved"]:
+            self._render_table()
+            return
+        target = self._row_at_y(event.y_root)
+        if target is not None and target != d["row"]:
+            try:
+                p = self.rows[d["row"]]["files"].pop(d["fi"])
+                self.rows[target]["files"].append(p)   # 기존 파일과 함께 유지
+            except IndexError:
+                pass
         self._render_table()
 
     def _file_remove(self, idx, fi):
         if 0 <= fi < len(self.rows[idx]["files"]):
             del self.rows[idx]["files"][fi]
-        self._pending_file = None
         self._render_table()
 
     # ---- 다음 단계 ---------------------------------------------------------
     def _collect_rows(self):
-        """빈 칸을 위 행에서 물려받아 완전한 행 목록 생성 (파일 있는 행만)."""
         out = []
         for i, row in enumerate(self.rows):
             if not row["files"]:
@@ -2510,7 +2873,6 @@ class App(BaseTk):
         return out
 
     def _check_names(self, rows):
-        """파일 이름이 표의 Rel test / Read-out과 안 맞아 보이는 경우 한 번에 확인."""
         odd = []
         for r in rows:
             rel = r["rel"].strip().lower()
@@ -2589,14 +2951,14 @@ class App(BaseTk):
         self.param_lb.pack(fill="both", expand=True, pady=10)
         btns = ttk.Frame(frm)
         btns.pack()
-        _pbtns = [("전체 선택", lambda: self.param_lb.select_set(0, "end")),
-                  ("분석 시작", self._analyze)]
-        for _i, (_t, _c) in enumerate(_pbtns):
-            ttk.Button(btns, text=_t, style=main_style(_i, 4),
-                       command=_c).pack(side="left", padx=5)
-        ttk.Button(btns, text="← 파일 다시 선택", style=main_style(2, 4),
+        ttk.Button(btns, text="전체 선택", style=main_style(0, 4),
+                   command=lambda: self.param_lb.select_set(0, "end")).pack(
+            side="left", padx=5)
+        ttk.Button(btns, text="분석 시작", style="Next.TButton",
+                   command=self._analyze).pack(side="left", padx=5)
+        ttk.Button(btns, text="← 파일 다시 선택", style="Back.TButton",
                    command=self._build_start).pack(side="left", padx=5)
-        ttk.Button(btns, text="⟲ 처음으로 (Reset)", style=main_style(3, 4),
+        ttk.Button(btns, text="⟲ 처음으로 (Reset)", style="Back.TButton",
                    command=self._reset_all).pack(side="left", padx=5)
         self.pbar = ttk.Progressbar(frm, mode="determinate")
         self.pbar.pack(fill="x", pady=5)
@@ -2647,6 +3009,8 @@ class App(BaseTk):
             ("Export PDF", self._export_pdf),
         ]
         n_tb = len(TOOLBAR)
+        NEXT_BTNS = {"Export PDF"}
+        BACK_BTNS = {"←  Parameter", "⟲ 처음으로"}
         for i, (label, cmd) in enumerate(TOOLBAR):
             if label is None:
                 self.param_var = tk.StringVar()
@@ -2657,14 +3021,18 @@ class App(BaseTk):
                 cb.bind("<<ComboboxSelected>>",
                         lambda e: self._goto(self._labels.index(self.param_var.get())))
                 continue
-            ttk.Button(top, text=label, style=main_style(i, n_tb),
+            st = ("Next.TButton" if label in NEXT_BTNS else
+                  "Back.TButton" if label in BACK_BTNS else main_style(i, n_tb))
+            ttk.Button(top, text=label, style=st,
                        command=cmd).pack(side="left", padx=3)
 
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True)
         self.line_tab = ttk.Frame(self.nb)   # Read-out(위) + Delta %(아래) 통합 탭
+        self.sum_tab = ttk.Frame(self.nb)    # Delta % 요약 표
         self.box_tab = ttk.Frame(self.nb)
         self.nb.add(self.line_tab, text="Read-out & Delta % graph")
+        self.nb.add(self.sum_tab, text="Delta % table")
         self.nb.add(self.box_tab, text="Box plot")
 
         self.line_fig = Figure(figsize=(10, 7), facecolor=C_CARD)
@@ -2676,6 +3044,21 @@ class App(BaseTk):
         self.line_canvas.mpl_connect("button_release_event", self._on_text_release)
 
         # Box plot 탭: 모드 선택 + 페이지 이동
+        # Delta % 요약 표 탭
+        sctrl = ttk.Frame(self.sum_tab)
+        sctrl.pack(fill="x")
+        ttk.Button(sctrl, text="◀", width=3, style=mid_style(0, 3),
+                   command=lambda: self._sum_nav(-1)).pack(side="left", padx=(8, 2))
+        self.sum_page_lbl = ttk.Label(sctrl, text="")
+        self.sum_page_lbl.pack(side="left")
+        ttk.Button(sctrl, text="▶", width=3, style=mid_style(2, 3),
+                   command=lambda: self._sum_nav(1)).pack(side="left", padx=2)
+        self.sum_page = 0
+        self.sum_fig = Figure(figsize=(10, 5), facecolor=C_CARD)
+        self.sum_canvas = FigureCanvasTkAgg(self.sum_fig, self.sum_tab)
+        self.sum_canvas.get_tk_widget().pack(fill="both", expand=True)
+        NavigationToolbar2Tk(self.sum_canvas, self.sum_tab)
+
         ctrl = ttk.Frame(self.box_tab)
         ctrl.pack(fill="x")
         ttk.Label(ctrl, text="분석 모드:").pack(side="left", padx=(8, 3))
@@ -2747,6 +3130,7 @@ class App(BaseTk):
             self._phase_mode_confirmed = True
         self.box_page = 0
         self._redraw_box()
+        self._redraw_summary()
 
     def _box_units(self):
         """현재 선택 item의 Box 그래프 단위 목록 반환.
@@ -2805,6 +3189,39 @@ class App(BaseTk):
         self.line_canvas.draw()
 
         self._redraw_box()
+
+    def _sum_blocks_cols(self):
+        """현재 보고 있는 Rel test 항목의 요약표 대상 (그룹, 블록, 파라미터)."""
+        group, col = self.selected[self.cur_idx]
+        rel = self.model.group_rel(group)
+        groups = [g for g in self.model.groups
+                  if self.model.group_rel(g) == rel]
+        cols, seen = [], set()
+        for g, c in self.selected:
+            if self.model.group_rel(g) == rel and c not in seen:
+                seen.add(c)
+                cols.append(c)
+        return rel, groups, summary_blocks(self.model, groups), cols
+
+    def _sum_nav(self, d):
+        rel, groups, blocks, cols = self._sum_blocks_cols()
+        npg = max(1, math.ceil(len(blocks) / MAX_BLOCKS_PER_PAGE))
+        p = self.sum_page + d
+        if 0 <= p < npg:
+            self.sum_page = p
+            self._redraw_summary()
+
+    def _redraw_summary(self):
+        rel, groups, blocks, cols = self._sum_blocks_cols()
+        npg = max(1, math.ceil(len(blocks) / MAX_BLOCKS_PER_PAGE))
+        self.sum_page = min(self.sum_page, npg - 1)
+        self.sum_fig.clear()
+        draw_delta_summary(self.sum_fig, self.model, rel, groups, cols,
+                           blocks[self.sum_page * MAX_BLOCKS_PER_PAGE:
+                                  (self.sum_page + 1) * MAX_BLOCKS_PER_PAGE],
+                           screen=True)
+        self.sum_canvas.draw()
+        self.sum_page_lbl.config(text=f"{self.sum_page + 1} / {npg} 페이지")
 
     def _redraw_box(self):
         lot, col = self.selected[self.cur_idx]
