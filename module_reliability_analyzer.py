@@ -770,19 +770,43 @@ def load_logo_image(height):
 
 # 로고(높이 0.34in)가 차지하는 가로 폭 기준 제목 시작 위치 (13.33in 페이지)
 LOGO_TITLE_X = 0.085
+PDF_DPI = 150          # 페이지 저장 해상도(로고 등 래스터 요소에만 영향)
+
+
+_LOGO_ARR = None
+
+
+def _pdf_logo_array(h_in):
+    """PDF 삽입용 로고 배열 — 출력 크기에 맞춰 미리 축소해 캐시
+    (페이지마다 고비용 리샘플링이 반복되지 않도록)."""
+    global _LOGO_ARR
+    if _LOGO_ARR is None:
+        try:
+            target_h = max(24, int(h_in * PDF_DPI))
+            try:
+                from PIL import Image
+                img = Image.open(io.BytesIO(_logo_bytes())).convert("RGB")
+                w = max(1, int(img.width * target_h / img.height))
+                img = img.resize((w, target_h), Image.LANCZOS)
+                import numpy as _np
+                _LOGO_ARR = _np.asarray(img)
+            except Exception:
+                _LOGO_ARR = mpimg.imread(io.BytesIO(_logo_bytes()), format="png")
+        except Exception:
+            _LOGO_ARR = False
+    return _LOGO_ARR
 
 
 def add_pdf_logo(fig, h_in=0.34):
     """PDF 페이지 좌측 상단에 로고 (높이 0.34in, 종횡비 유지, 선명)."""
-    try:
-        logo = mpimg.imread(io.BytesIO(_logo_bytes()), format="png")
-    except Exception:
+    logo = _pdf_logo_array(h_in)
+    if logo is False or logo is None:
         return
     lh, lw = logo.shape[0], logo.shape[1]
     w_in = h_in * lw / lh
     fw, fh = fig.get_size_inches()
     ax = fig.add_axes([0.007, 1 - (h_in / fh) - 0.006, w_in / fw, h_in / fh])
-    ax.imshow(logo, interpolation="lanczos")
+    ax.imshow(logo, interpolation="nearest")
     ax.axis("off")
 
 
@@ -2014,125 +2038,7 @@ PPT_LANDSCAPE = (13.33, 7.5)
 
 
 
-def _delta_stats(model, group, col, readout):
-    """해당 Read-out의 전체 시료 Delta % (min, max, avg). 값 없으면 None."""
-    try:
-        res = model.delta_series(group, readout, col)
-    except Exception:
-        return None
-    ys = res[1]
-    vals = [y for y in ys if not math.isnan(y)]
-    if not vals:
-        return None
-    return min(vals), max(vals), sum(vals) / len(vals)
-
-
-MAX_BLOCKS_PER_PAGE = 8     # 한 페이지에 들어갈 (Lot x Read-out) 블록 수
-
-
-def draw_delta_summary(fig, model, rel, groups, cols, blocks, screen=False):
-    """Delta % 요약 표 1페이지.
-    행 = Parameter, 열 = Lot > Read-out > (Min/Max/Avg).
-    screen=True면 화면 탭용(로고 없음)."""
-    import matplotlib.patches as mpatches
-    # PDF에서는 좌측 상단 로고와 겹치지 않도록 제목을 오른쪽으로 밀어둔다
-    title_x = 0.035 if screen else LOGO_TITLE_X
-    fig.suptitle(f"{rel} — Delta % Summary (all samples)",
-                 fontsize=11, x=title_x, ha="left", y=0.955)
-    # 행 높이를 글자 크기(8pt) 기준으로 잡아 위·아래 여백이 과하지 않게 구성
-    FS = 8
-    fw, fh = fig.get_size_inches()
-    row_in = FS / 72.0 * 2.0          # 데이터 행 높이 (글자의 2배)
-    hdr_in = FS / 72.0 * 1.9          # 헤더 한 줄 높이
-    top_margin, bot_margin = (0.085 if screen else 0.125), 0.05
-    tbl_in = hdr_in * 3 + row_in * max(len(cols), 1)
-    avail_in = fh * (1 - top_margin - bot_margin)
-    if tbl_in > avail_in:             # 항목이 많으면 자동 축소
-        k = avail_in / tbl_in
-        row_in *= k
-        hdr_in *= k
-        FS = max(5.5, FS * k)
-        tbl_in = avail_in
-    tbl_frac = tbl_in / fh
-    ax = fig.add_axes([0.035, 1 - top_margin - tbl_frac, 0.93, tbl_frac])
-    ax.axis("off")
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-
-    P_W = 0.155
-    n_blk = max(len(blocks), 1)
-    blk_w = (1 - P_W) / n_blk
-    h = (hdr_in / fh) / tbl_frac      # 축 좌표계 기준 헤더 행 높이
-    top = 1.0
-    head_c = [shade(H_MAIN, 0.42, 0.72), shade(H_MAIN, 0.40, 0.82),
-              shade(H_MAIN, 0.36, 0.90)]
-    edge = "#C9C9D0"
-    strong = "#5B5B66"
-
-    # Parameter 헤더
-    ax.add_patch(mpatches.Rectangle((0, top - 3 * h), P_W, 3 * h,
-                                    facecolor="#F2F2F5", edgecolor=edge, lw=0.6))
-    ax.text(0.008, top - 1.5 * h, "Parameter", fontsize=FS,
-            fontweight="bold", va="center")
-
-    # Lot / Read-out / Min·Max·Avg 헤더
-    _lot_seps = []
-    x = P_W
-    gi = 0
-    while gi < len(blocks):
-        g = blocks[gi][0]
-        gx0 = x
-        while gi < len(blocks) and blocks[gi][0] == g:
-            r = blocks[gi][1]
-            ax.add_patch(mpatches.Rectangle((x, top - 2 * h), blk_w, h,
-                                            facecolor=head_c[1], edgecolor=edge, lw=0.6))
-            ax.text(x + blk_w / 2, top - 1.5 * h, r, fontsize=FS - 0.5,
-                    fontweight="bold", ha="center", va="center")
-            for k, lab in enumerate(("Min", "Max", "Avg")):
-                cx = x + blk_w * k / 3
-                ax.add_patch(mpatches.Rectangle((cx, top - 3 * h), blk_w / 3, h,
-                                                facecolor=head_c[2], edgecolor=edge, lw=0.5))
-                ax.text(cx + blk_w / 6, top - 2.5 * h, lab, fontsize=FS - 1,
-                        fontweight="bold", ha="center", va="center")
-            x += blk_w
-            gi += 1
-        ax.add_patch(mpatches.Rectangle((gx0, top - h), x - gx0, h,
-                                        facecolor=head_c[0], edgecolor=edge, lw=0.6))
-        ax.text((gx0 + x) / 2, top - 0.5 * h, model.group_lot(g), fontsize=FS + 0.5,
-                fontweight="bold", ha="center", va="center")
-        _lot_seps.append(gx0)
-
-    # 본문
-    y0 = top - 3 * h
-    rh = (row_in / fh) / tbl_frac
-    fs = FS - 0.5
-    for pi, col in enumerate(cols):
-        yy = y0 - (pi + 1) * rh
-        band = "#FAFAFC" if pi % 2 else "#FFFFFF"
-        ax.add_patch(mpatches.Rectangle((0, yy), P_W, rh, facecolor=band,
-                                        edgecolor=edge, lw=0.4))
-        ax.text(0.008, yy + rh / 2, col_title(col), fontsize=fs, va="center")
-        x = P_W
-        for g, r in blocks:
-            s = _delta_stats(model, g, col, r)
-            for k in range(3):
-                cx = x + blk_w * k / 3
-                ax.add_patch(mpatches.Rectangle((cx, yy), blk_w / 3, rh,
-                                                facecolor=band, edgecolor=edge, lw=0.4))
-                txt = "—" if s is None else f"{s[k]:.2f}"
-                ax.text(cx + blk_w / 6, yy + rh / 2, txt, fontsize=fs,
-                        ha="center", va="center")
-            x += blk_w
-    y_bot = y0 - rh * len(cols)
-    for _xs in _lot_seps:
-        ax.plot([_xs, _xs], [y_bot, top], color=strong, lw=1.4)
-    ax.plot([0, 1], [top - 3 * h, top - 3 * h], color=strong, lw=1.4)
-    ax.plot([0, 1], [y_bot, y_bot], color=strong, lw=1.4)
-    ax.plot([P_W, P_W], [y_bot, top], color=strong, lw=1.0)
-    ax.plot([1, 1], [y_bot, top], color=strong, lw=1.4)
-    fig.text(0.035, 1 - top_margin - tbl_frac - 0.028,
-             "Delta % statistics of all samples (vs. first read-out).  Unit: %",
-             fontsize=7.5, color="#6E6E73")
+MAX_BLOCKS_PER_BAND = 6      # 한 줄(밴드)에 넣을 최대 (Lot x Read-out) 블록 수
 
 
 def summary_blocks(model, groups):
@@ -2142,6 +2048,194 @@ def summary_blocks(model, groups):
         for r in model.readouts(g)[1:]:
             out.append((g, r))
     return out
+
+
+def summary_bands(model, groups):
+    """Lot이 많으면 줄(밴드)을 나눠 아래로 이어지게 한다.
+    한 Lot은 쪼개지지 않고 통째로 한 밴드에 들어간다."""
+    per_lot = []
+    for g in groups:
+        ros = model.readouts(g)[1:]
+        if ros:
+            per_lot.append((g, ros))
+    bands, cur, cur_n = [], [], 0
+    max_blocks = MAX_BLOCKS_PER_BAND
+    for g, ros in per_lot:
+        if cur and cur_n + len(ros) > max_blocks:
+            bands.append(cur)
+            cur, cur_n = [], 0
+        cur.append((g, ros))
+        cur_n += len(ros)
+    if cur:
+        bands.append(cur)
+    return bands or [[]]
+
+
+def _fmt(v):
+    return "—" if v is None else f"{v:.2f}"
+
+
+def draw_summary_page(fig, model, rel, bands, rows, label_heads, label_ws,
+                      screen=False, note=None):
+    """요약 표 1페이지.
+    bands : [[(group, [readouts...]), ...], ...]  (줄바꿈된 Lot 묶음)
+    rows  : [(labels tuple, stats_fn(group, readout) -> tuple|None, bold)]
+    """
+    import matplotlib.patches as mpatches
+    title_x = 0.035 if screen else LOGO_TITLE_X
+    fig.suptitle(f"{rel} — Delta % Summary (all samples)",
+                 fontsize=11, x=title_x, ha="left", y=0.955)
+    fw, fh = fig.get_size_inches()
+
+    head_c = [shade(H_MAIN, 0.42, 0.72), shade(H_MAIN, 0.40, 0.82),
+              shade(H_MAIN, 0.36, 0.90)]
+    edge, strong = "#C9C9D0", "#5B5B66"
+    band_gap_in = 0.16
+
+    # ---- 글자 크기 자동 맞춤: 모든 밴드가 한 페이지에 들어가도록 ----
+    top_y = 0.90 if screen else 0.875
+    avail_in = fh * (top_y - 0.045)
+    FS = 8.0
+    while True:
+        row_in = FS / 72.0 * 2.0
+        hdr_in = FS / 72.0 * 1.9
+        need = len(bands) * (hdr_in * 3 + band_gap_in) + row_in * len(rows) * 1.0
+        need = sum(hdr_in * 3 for _ in bands) + row_in * len(rows) * len(bands) \
+            + band_gap_in * (len(bands) - 1)
+        if need <= avail_in or FS <= 5.0:
+            break
+        FS -= 0.25
+    FS = max(FS, 5.0)
+    row_in = FS / 72.0 * 2.0
+    hdr_in = FS / 72.0 * 1.9
+
+    y_cursor = top_y
+    for band in bands:
+        blocks = [(g, r) for g, ros in band for r in ros]
+        n_blk = max(len(blocks), 1)
+        tbl_in = hdr_in * 3 + row_in * len(rows)
+        frac = tbl_in / fh
+        ax = fig.add_axes([0.035, y_cursor - frac, 0.93, frac])
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        P_W = sum(label_ws)
+        blk_w = (1 - P_W) / n_blk
+        h = (hdr_in / fh) / frac
+        top = 1.0
+
+        x = 0
+        for name, w_ in zip(label_heads, label_ws):
+            ax.add_patch(mpatches.Rectangle((x, top - 3 * h), w_, 3 * h,
+                                            facecolor="#F2F2F5", edgecolor=edge, lw=0.6))
+            ax.text(x + 0.006, top - 1.5 * h, name, fontsize=FS,
+                    fontweight="bold", va="center")
+            x += w_
+
+        seps = []
+        x = P_W
+        for g, ros in band:
+            gx0 = x
+            for r in ros:
+                ax.add_patch(mpatches.Rectangle((x, top - 2 * h), blk_w, h,
+                                                facecolor=head_c[1], edgecolor=edge, lw=0.6))
+                ax.text(x + blk_w / 2, top - 1.5 * h, r, fontsize=FS - 0.5,
+                        fontweight="bold", ha="center", va="center")
+                for k, lab in enumerate(("Min", "Max", "Avg")):
+                    cx = x + blk_w * k / 3
+                    ax.add_patch(mpatches.Rectangle((cx, top - 3 * h), blk_w / 3, h,
+                                                    facecolor=head_c[2], edgecolor=edge, lw=0.5))
+                    ax.text(cx + blk_w / 6, top - 2.5 * h, lab, fontsize=FS - 1,
+                            fontweight="bold", ha="center", va="center")
+                x += blk_w
+            ax.add_patch(mpatches.Rectangle((gx0, top - h), x - gx0, h,
+                                            facecolor=head_c[0], edgecolor=edge, lw=0.6))
+            ax.text((gx0 + x) / 2, top - 0.5 * h, model.group_lot(g),
+                    fontsize=FS + 0.5, fontweight="bold", ha="center", va="center")
+            seps.append(gx0)
+
+        y0 = top - 3 * h
+        rh = (row_in / fh) / frac
+        for ri, (labels, fn, bold) in enumerate(rows):
+            yy = y0 - (ri + 1) * rh
+            band_bg = "#EFF6F2" if bold else ("#FAFAFC" if ri % 2 else "#FFFFFF")
+            xx = 0
+            for txt, w_ in zip(labels, label_ws):
+                ax.add_patch(mpatches.Rectangle((xx, yy), w_, rh, facecolor=band_bg,
+                                                edgecolor=edge, lw=0.4))
+                if txt:
+                    ax.text(xx + 0.006, yy + rh / 2, txt, fontsize=FS - 0.5,
+                            va="center", fontweight="bold" if bold else "normal")
+                xx += w_
+            x = P_W
+            for g, r in blocks:
+                s = fn(g, r)
+                for k in range(3):
+                    cx = x + blk_w * k / 3
+                    ax.add_patch(mpatches.Rectangle((cx, yy), blk_w / 3, rh,
+                                                    facecolor=band_bg, edgecolor=edge, lw=0.4))
+                    ax.text(cx + blk_w / 6, yy + rh / 2,
+                            _fmt(None if s is None else s[k]),
+                            fontsize=FS - 0.5, ha="center", va="center",
+                            fontweight="bold" if bold else "normal")
+                x += blk_w
+        y_bot = y0 - rh * len(rows)
+        ax.plot([0, 1], [y0, y0], color=strong, lw=1.4)
+        ax.plot([0, 1], [y_bot, y_bot], color=strong, lw=1.4)
+        for xs in seps + [P_W, 1.0]:
+            ax.plot([xs, xs], [y_bot, top], color=strong, lw=1.2)
+        y_cursor -= frac + band_gap_in / fh
+
+    fig.text(0.035, max(0.018, y_cursor - 0.028),
+             note or "Delta % statistics of all samples (vs. first read-out).  Unit: %",
+             fontsize=min(7.5, FS), color="#6E6E73")
+
+
+def _phase_delta_stats(model, group, col, readout, phase=None):
+    """Delta % 통계. phase=None이면 모든 phase 합산(Total)."""
+    try:
+        xs, ys, segs = model.seg_delta(group, readout, col)
+    except Exception:
+        return None
+    vals = []
+    for ph, s, e in segs:
+        if phase is None or ph == phase:
+            vals += [y for y in ys[s - 1:e] if not math.isnan(y)]
+    if not vals:
+        return None
+    return min(vals), max(vals), sum(vals) / len(vals)
+
+
+MAX_ROWS_PER_PAGE = 34      # 한 페이지에 넣을 최대 데이터 행 수
+
+
+def summary_pages(model, groups, cols):
+    """행 = Parameter마다 Total + Phase별. 가능하면 1페이지, 넘치면 분할."""
+    ref = groups[0] if groups else None
+    blocks = []
+    for c in cols:
+        grp = [((col_title(c), "Total"),
+                (lambda cc: (lambda g, r: _phase_delta_stats(model, g, cc, r)))(c),
+                True)]
+        phs = model.col_phases(ref, c) if ref is not None else []
+        if len(phs) > 1 or (phs and phs[0] != NO_PHASE):
+            for ph in phs:
+                grp.append((("", ph),
+                            (lambda cc, pp: (lambda g, r:
+                             _phase_delta_stats(model, g, cc, r, pp)))(c, ph),
+                            False))
+        blocks.append(grp)
+
+    pages, cur = [], []
+    for grp in blocks:
+        if cur and len(cur) + len(grp) > MAX_ROWS_PER_PAGE:
+            pages.append((cur, ["Parameter", "Phase"], [0.135, 0.075]))
+            cur = []
+        cur.extend(grp)
+    if cur:
+        pages.append((cur, ["Parameter", "Phase"], [0.135, 0.075]))
+    return pages or [([], ["Parameter", "Phase"], [0.135, 0.075])]
 
 
 def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
@@ -2176,8 +2270,14 @@ def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
             rel_order.append(rel)
         rel_groups[rel].append(g)
     for rel in rel_order:
-        total += max(1, math.ceil(len(summary_blocks(model, rel_groups[rel]))
-                                  / MAX_BLOCKS_PER_PAGE))
+        _gs = rel_groups[rel]
+        _c, _s = [], set()
+        for _g in _gs:
+            for _cc in plan[_g][0]:
+                if _cc not in _s:
+                    _s.add(_cc)
+                    _c.append(_cc)
+        total += len(summary_pages(model, _gs, _c))
 
     done = 0
     with PdfPages(path) as pdf:
@@ -2210,7 +2310,7 @@ def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
                 fig.tight_layout(rect=(0, 0, 1, 0.975), h_pad=0.5)
                 apply_overlays(fig)
                 add_pdf_logo(fig)
-                pdf.savefig(fig, dpi=200)
+                pdf.savefig(fig, dpi=PDF_DPI)
                 done += 1
                 if progress_cb:
                     progress_cb(done, total)
@@ -2222,13 +2322,12 @@ def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
                 if _c not in _seen:
                     _seen.add(_c)
                     _cols.append(_c)
-        _blocks = summary_blocks(model, _gs)
-        for _bi in range(0, max(len(_blocks), 1), MAX_BLOCKS_PER_PAGE):
+        _bands = summary_bands(model, _gs)
+        for _rws, _lh, _lw in summary_pages(model, _gs, _cols):
             fig = Figure(figsize=PPT_LANDSCAPE)
-            draw_delta_summary(fig, model, rel, _gs, _cols,
-                               _blocks[_bi:_bi + MAX_BLOCKS_PER_PAGE])
+            draw_summary_page(fig, model, rel, _bands, _rws, _lh, _lw)
             add_pdf_logo(fig)
-            pdf.savefig(fig, dpi=200)
+            pdf.savefig(fig, dpi=PDF_DPI)
             done += 1
             if progress_cb:
                 progress_cb(done, total)
@@ -2255,7 +2354,7 @@ def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
                                     hspace=0.85, wspace=0.35)
                 apply_overlays(fig)
                 add_pdf_logo(fig)
-                pdf.savefig(fig, dpi=200)
+                pdf.savefig(fig, dpi=PDF_DPI)
                 done += 1
                 if progress_cb:
                     progress_cb(done, total)
@@ -2275,7 +2374,7 @@ def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
                                     hspace=0.85, wspace=0.35)
                 apply_overlays(fig)
                 add_pdf_logo(fig)
-                pdf.savefig(fig, dpi=200)
+                pdf.savefig(fig, dpi=PDF_DPI)
                 done += 1
                 if progress_cb:
                     progress_cb(done, total)
@@ -3201,25 +3300,24 @@ class App(BaseTk):
             if self.model.group_rel(g) == rel and c not in seen:
                 seen.add(c)
                 cols.append(c)
-        return rel, groups, summary_blocks(self.model, groups), cols
+        return rel, groups, summary_pages(self.model, groups, cols), cols
 
     def _sum_nav(self, d):
-        rel, groups, blocks, cols = self._sum_blocks_cols()
-        npg = max(1, math.ceil(len(blocks) / MAX_BLOCKS_PER_PAGE))
+        rel, groups, pages, cols = self._sum_blocks_cols()
         p = self.sum_page + d
-        if 0 <= p < npg:
+        if 0 <= p < max(1, len(pages)):
             self.sum_page = p
             self._redraw_summary()
 
     def _redraw_summary(self):
-        rel, groups, blocks, cols = self._sum_blocks_cols()
-        npg = max(1, math.ceil(len(blocks) / MAX_BLOCKS_PER_PAGE))
+        rel, groups, pages, cols = self._sum_blocks_cols()
+        npg = max(1, len(pages))
         self.sum_page = min(self.sum_page, npg - 1)
+        rws, lheads, lws = pages[self.sum_page]
+        bands = summary_bands(self.model, groups)
         self.sum_fig.clear()
-        draw_delta_summary(self.sum_fig, self.model, rel, groups, cols,
-                           blocks[self.sum_page * MAX_BLOCKS_PER_PAGE:
-                                  (self.sum_page + 1) * MAX_BLOCKS_PER_PAGE],
-                           screen=True)
+        draw_summary_page(self.sum_fig, self.model, rel, bands, rws,
+                          lheads, lws, screen=True)
         self.sum_canvas.draw()
         self.sum_page_lbl.config(text=f"{self.sum_page + 1} / {npg} 페이지")
 
