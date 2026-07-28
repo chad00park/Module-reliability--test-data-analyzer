@@ -2241,7 +2241,8 @@ def summary_pages(model, groups, cols):
     return pages or [([], ["Parameter", "Phase"], [0.125, 0.06])]
 
 
-def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
+def export_pdf(model, pairs, path, include_phase=False, progress_cb=None,
+               only_rel=None):
     """pairs: [(lot, col)]. col은 반복 item 또는 공통 item."""
     per_lot = {}
     for g, c in pairs:
@@ -2268,6 +2269,8 @@ def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
     rel_order, rel_groups = [], {}
     for g in order:
         rel = model.group_rel(g)
+        if only_rel is not None and rel != only_rel:
+            continue          # 신뢰성 항목별 저장 시 해당 항목만
         if rel not in rel_groups:
             rel_groups[rel] = []
             rel_order.append(rel)
@@ -2310,7 +2313,7 @@ def export_pdf(model, pairs, path, include_phase=False, progress_cb=None):
                         ax1.axis("off")
                         ax2.axis("off")
                 # 여백 축소 → 그래프 세로 크기 확대
-                fig.tight_layout(rect=(0, 0, 1, 0.975), h_pad=0.5)
+                fig.subplots_adjust(top=0.894, bottom=0.078, left=0.050, right=0.988, hspace=0.72)
                 apply_overlays(fig)
                 add_pdf_logo(fig)
                 pdf.savefig(fig, dpi=PDF_DPI)
@@ -3035,21 +3038,22 @@ class App(BaseTk):
         ttk.Label(frm, text="\n".join(head), font=(UI_FONT, 10, "bold"),
                   justify="left").pack(pady=(12, 4))
         ttk.Label(frm, text="분석할 Parameter를 선택하세요 (Ctrl/Shift 다중 선택)\n"
-                            "※ (공통) 표기는 phase 밖 item입니다.",
+                            "※ (공통) 표기는 phase 밖 item입니다."
+                            "  ※ 같은 신뢰성 항목의 모든 Lot에 자동 적용됩니다",
                   style="Sub.TLabel", justify="center").pack()
         self.param_lb = tk.Listbox(frm, selectmode="extended")
         style_listbox(self.param_lb)
-        self._pairs = []
-        multi = len(self.model.groups) > 1
-        for g in self.model.groups:
-            for c in self.model.rep_cols(g):
-                self._pairs.append((g, c))
+        # 신뢰성 항목 단위로 표시 — Lot은 선택할 필요 없이 함께 적용됨
+        self._rel_choices = []      # [(rel, col)] 화면 목록과 1:1
+        multi_rel = len(self._rel_list()) > 1
+        for rel in self._rel_list():
+            for c in self._rel_columns(rel):
+                self._rel_choices.append((rel, c))
                 label = col_title(c)
-                self.param_lb.insert("end", f"{g} | {label}" if multi else label)
-            for c in self.model.np_cols(g):
-                self._pairs.append((g, c))
-                label = f"{col_title(c)} {NO_PHASE}"
-                self.param_lb.insert("end", f"{g} | {label}" if multi else label)
+                if self._is_common(rel, c):
+                    label += "  (공통)"
+                self.param_lb.insert("end",
+                                     f"{rel} | {label}" if multi_rel else label)
         self.param_lb.pack(fill="both", expand=True, pady=10)
         btns = ttk.Frame(frm)
         btns.pack()
@@ -3065,12 +3069,51 @@ class App(BaseTk):
         self.pbar = ttk.Progressbar(frm, mode="determinate")
         self.pbar.pack(fill="x", pady=5)
 
+    def _rel_list(self):
+        """분석에 포함된 신뢰성 항목 목록 (표 순서 유지)."""
+        rels = []
+        for g in self.model.groups:
+            r = self.model.group_rel(g)
+            if r not in rels:
+                rels.append(r)
+        return rels
+
+    def _rel_groups(self, rel):
+        return [g for g in self.model.groups if self.model.group_rel(g) == rel]
+
+    def _rel_columns(self, rel):
+        """해당 신뢰성 항목의 모든 Lot에 있는 Parameter 합집합 (순서 유지).
+        반복 측정 item + (공통) item 모두 포함."""
+        cols, seen = [], set()
+        for g in self._rel_groups(rel):
+            for c in list(self.model.rep_cols(g)) + list(self.model.np_cols(g)):
+                if c not in seen:
+                    seen.add(c)
+                    cols.append(c)
+        return cols
+
+    def _is_common(self, rel, c):
+        for g in self._rel_groups(rel):
+            if c in self.model.np_cols(g):
+                return True
+        return False
+
     def _analyze(self):
         sel = self.param_lb.curselection()
         if not sel:
             messagebox.showwarning("알림", "Parameter를 선택하세요.", parent=self)
             return
-        self.selected = [self._pairs[i] for i in sel]
+        # 선택한 (신뢰성, Parameter)를 그 항목의 모든 Lot으로 전개
+        self.selected = []
+        for i in sel:
+            rel, c = self._rel_choices[i]
+            for g in self._rel_groups(rel):
+                if c in self.model.rep_cols(g) or c in self.model.np_cols(g):
+                    self.selected.append((g, c))
+        if not self.selected:
+            messagebox.showwarning("알림", "선택한 Parameter에 해당하는 데이터가 없습니다.",
+                                   parent=self)
+            return
         self.cur_idx = 0
         self.pbar["maximum"] = len(self.selected)
         self.pbar["value"] = len(self.selected)
@@ -3860,11 +3903,59 @@ class App(BaseTk):
             self._redraw()
 
     # ---- PDF ------------------------------------------------------------------
+    def _rels_in_selection(self):
+        """선택된 항목에 포함된 신뢰성(Rel test) 목록 — 표 순서 유지."""
+        rels = []
+        for g, _ in self.selected:
+            r = self.model.group_rel(g)
+            if r not in rels:
+                rels.append(r)
+        return rels
+
+    def _ask_split_mode(self, rels):
+        """여러 신뢰성 항목이 있을 때 저장 방식 선택.
+        반환: 'split' | 'one' | None(취소)"""
+        if len(rels) <= 1:
+            return "one"
+        dlg = tk.Toplevel(self)
+        dlg.title("PDF 저장 방식")
+        dlg.transient(self)
+        dlg.grab_set()
+        ttk.Label(dlg, text="분석에 신뢰성 항목이 여러 개 있습니다.",
+                  font=(UI_FONT, 10, "bold")).pack(padx=16, pady=(14, 4))
+        ttk.Label(dlg, text="  ·  " + ",  ".join(rels),
+                  style="Sub.TLabel").pack(padx=16)
+        ttk.Label(dlg, text="어떻게 저장할까요?",
+                  style="Sub.TLabel").pack(padx=16, pady=(8, 10))
+        choice = {"v": None}
+
+        def pick(v):
+            choice["v"] = v
+            dlg.destroy()
+
+        btns = ttk.Frame(dlg)
+        btns.pack(padx=16, pady=(0, 14))
+        ttk.Button(btns, text="하나로 묶어 저장", style=pop_style(0, 3),
+                   command=lambda: pick("one")).pack(side="left", padx=4)
+        ttk.Button(btns, text="항목별로 따로 저장", style=pop_style(1, 3),
+                   command=lambda: pick("split")).pack(side="left", padx=4)
+        ttk.Button(btns, text="취소", style=pop_style(2, 3),
+                   command=lambda: pick(None)).pack(side="left", padx=4)
+        center_window(dlg)
+        self.wait_window(dlg)
+        return choice["v"]
+
     def _export_pdf(self):
+        rels = self._rels_in_selection()
+        mode = self._ask_split_mode(rels)
+        if mode is None:
+            return
         if len(self.model.groups) == 1:
             default_name = f"{self.model.reliability}_{self.model.groups[0]}_Data_Analysis.pdf"
         else:
             default_name = f"{self.model.reliability}_Data_Analysis.pdf"
+        if mode == "split":
+            default_name = "Data_Analysis.pdf"
         path = filedialog.asksaveasfilename(
             defaultextension=".pdf",
             initialfile=default_name,
@@ -3872,12 +3963,20 @@ class App(BaseTk):
             confirmoverwrite=False)
         if not path:
             return
-        if os.path.exists(path):
+
+        base, ext = os.path.splitext(path)
+        if mode == "split":
+            jobs = [(f"{base}_{r}{ext}", r) for r in rels]
+        else:
+            jobs = [(path, None)]
+        exists = [os.path.basename(p) for p, _ in jobs if os.path.exists(p)]
+        if exists:
             if not messagebox.askyesno(
                     "덮어쓰기 확인",
-                    f"동일한 이름의 파일이 이미 있습니다.\n\n{os.path.basename(path)}\n\n덮어쓸까요?",
-                    parent=self):
+                    "동일한 이름의 파일이 이미 있습니다.\n\n"
+                    + "\n".join(exists) + "\n\n덮어쓸까요?", parent=self):
                 return
+
         include_phase = messagebox.askyesno(
             "PDF 구성",
             "Box plot의 Phase별 분석도 PDF에 포함할까요?\n"
@@ -3890,18 +3989,24 @@ class App(BaseTk):
         pbar.pack(pady=5)
         center_window(win, 360, 90)
 
-        def cb(done, total):
-            pbar["maximum"] = total
-            pbar["value"] = done
-            win.update_idletasks()
+        n_jobs = len(jobs)
+
+        def make_cb(idx):
+            def cb(done, total):
+                pbar["maximum"] = total * n_jobs
+                pbar["value"] = idx * total + done
+                win.update_idletasks()
+            return cb
 
         def work():
             try:
-                export_pdf(self.model, self.selected, path,
-                           include_phase=include_phase, progress_cb=cb)
+                for i, (p, rel) in enumerate(jobs):
+                    export_pdf(self.model, self.selected, p,
+                               include_phase=include_phase,
+                               progress_cb=make_cb(i), only_rel=rel)
+                msg = ("PDF 저장 완료:\n" + "\n".join(p for p, _ in jobs))
                 self.after(0, lambda: (win.destroy(),
-                                       messagebox.showinfo("완료", f"PDF 저장 완료:\n{path}",
-                                                           parent=self)))
+                                       messagebox.showinfo("완료", msg, parent=self)))
             except Exception as e:
                 err = traceback.format_exc()
                 self.after(0, lambda: (win.destroy(),
